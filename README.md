@@ -9,19 +9,19 @@
 - **All guardrails removed** — the extra prompt-level injection layers (hardcoded refusal patterns, "cyber risk" instruction blocks, managed-settings security overlays) are stripped. The model's own safety training still applies
 - **54 experimental features unlocked** — all compile-clean feature flags are enabled via `bun:bundle` switches. ULTRAPLAN, ULTRATHINK, BRIDGE_MODE, VOICE_MODE, AGENT_TRIGGERS, CACHED_MICROCOMPACT, and 48 more
 - **One binary** — the entire modified CLI is compiled into a single `bun build --compile` binary with no runtime dependencies
-- **Cross-platform** — macOS (arm64/x64), Linux (arm64/x64), Android (Termux via ELF patching), Windows (x64), and iOS (a-Shell/iSH) supported
+- **Cross-platform** — macOS (arm64/x64), Linux (arm64/x64), Android (Termux via ELF patching), Windows (x64/arm64), and iOS (a-Shell/iSH) supported
 
 ## Quick Start
 
 ```bash
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/your-org/jxproxy/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/marshaljlee/jxproxy/main/install.sh | bash
 
 # Android (Termux)
-curl -fsSL https://raw.githubusercontent.com/your-org/jxproxy/main/installers/install-android.sh | bash
+curl -fsSL https://raw.githubusercontent.com/marshaljlee/jxproxy/main/installers/install-android.sh | bash
 
 # Windows (PowerShell)
-iwr -useb https://raw.githubusercontent.com/your-org/jxproxy/main/installers/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/marshaljlee/jxproxy/main/installers/install.ps1 | iex
 ```
 
 Then:
@@ -110,6 +110,7 @@ See [FEATURES.md](docs/FEATURES.md) for the full audit of all 88 flags.
 | Linux (x64/arm64) | ✅ | Native `bun build --compile` binary |
 | Android (Termux) | ✅ | Official linux-arm64 binary + ELF interpreter patching via `glibc-runner` |
 | Windows (x64) | ✅ | `bun build --compile --target windows` |
+| Windows 11 on ARM | ✅ | `bun build --compile --target bun-windows-arm64` (Bun 1.2+ auto-detected) |
 | iOS (a-Shell/iSH) | 🚧 Experimental | Linux arm64 binary via iSH appstore version |
 
 ## Configuration
@@ -118,8 +119,12 @@ Set environment variables or create `~/.jxproxy/config.env`:
 
 ```bash
 # --- Proxy Configuration ---
-# The port the proxy listens on (default: 2099)
-JXPROXY_PORT=2099
+# The port the proxy listens on (default: 5529)
+JXPROXY_PORT=5529
+
+# Auth token sent by Claude Code as x-api-key (default: jxproxy)
+# Set to empty to disable proxy auth
+JXPROXY_AUTH_TOKEN=jxproxy
 
 # --- Model Routing ---
 # Default model for all requests (provider-prefixed ref)
@@ -134,13 +139,16 @@ MODEL_HAIKU=anthropic/claude-haiku-4-5-20251001
 ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...
 OPENROUTER_API_KEY=sk-or-...
+OPENCODE_API_KEY=oc-...
 
 # --- Provider Selection ---
 # Which provider to route through. Options:
-#   direct     — use ANTHROPIC_API_KEY directly (default)
-#   openrouter — route via OpenRouter
-#   openai     — translate to OpenAI-compatible API
-#   local      — connect to a local LLM (Ollama, LM Studio, llama.cpp)
+#   direct       — use ANTHROPIC_API_KEY directly (default)
+#   openrouter   — route via OpenRouter
+#   opencode-zen — route via OpenCode Zen (opencode.ai/zen/v1)
+#   opencode-go  — route via OpenCode Go (opencode.ai/zen/go/v1)
+#   openai       — translate to OpenAI-compatible API
+#   local        — connect to a local LLM (Ollama, LM Studio, llama.cpp)
 JXPROXY_PROVIDER=direct
 
 # --- Local LLM (when JXPROXY_PROVIDER=local) ---
@@ -150,22 +158,17 @@ LOCAL_LLM_MODEL=ollama/qwen3:latest
 
 ## Proxy Provider Backends
 
-| Provider | Protocol | Status |
-|----------|----------|--------|
-| Anthropic Direct | Messages | ✅ |
-| OpenRouter | Messages | ✅ |
-| OpenAI Codex | Responses | ✅ |
-| Google AI Studio (Gemini) | OpenAI Chat | ✅ |
-| AWS Bedrock | Messages | ✅ |
-| Google Cloud Vertex AI | Messages | ✅ |
-| DeepSeek | OpenAI Chat | ✅ |
-| Mistral | OpenAI Chat | ✅ |
-| Groq | OpenAI Chat | ✅ |
-| Fireworks AI | Messages | ✅ |
-| NVIDIA NIM | OpenAI Chat | ✅ |
-| Ollama (local) | Messages | ✅ |
-| LM Studio (local) | Messages | ✅ |
-| llama.cpp (local) | Messages | ✅ |
+All providers using OpenAI Chat protocol (codex, gemini, gpt, deepseek, mistral, groq, grok, etc.) work through the generic `openai` backend — just point `JXPROXY_PROVIDER=openai` and set `MODEL` to your upstream model name. Similarly, any Anthropic Messages provider works through the `direct` backend with a custom `ANTHROPIC_BASE_URL`.
+
+| Provider | Protocol | Implemented | Notes |
+|----------|----------|-------------|-------|
+| Anthropic Direct | Messages | ✅ `direct` | Uses `ANTHROPIC_API_KEY` |
+| OpenRouter | Messages | ✅ `openrouter` | Uses `OPENROUTER_API_KEY` |
+| OpenCode Zen | OpenAI Chat | ✅ `opencode-zen` | `opencode.ai/zen/v1`, uses `OPENCODE_API_KEY` |
+| OpenCode Go | OpenAI Chat | ✅ `opencode-go` | `opencode.ai/zen/go/v1`, shares `OPENCODE_API_KEY` |
+| OpenAI / Codex | OpenAI Chat | ✅ `openai` | Uses `OPENAI_API_KEY` |
+| Local (Ollama, LM Studio, llama.cpp) | OpenAI Chat | ✅ `local` | Configure `LOCAL_LLM_BASE_URL` + `LOCAL_LLM_MODEL` |
+| Google Gemini / AWS Bedrock / Vertex / DeepSeek / Mistral / Groq / Grok / Fireworks / NVIDIA NIM | Varies | 🔧 Via `openai` or `direct` | Set `JXPROXY_PROVIDER=openai` + custom `OPENAI_BASE_URL` and `OPENAI_API_KEY` |
 
 ## Building From Source
 
@@ -174,7 +177,7 @@ LOCAL_LLM_MODEL=ollama/qwen3:latest
 curl -fsSL https://bun.sh/install | bash
 
 # Clone and build
-git clone https://github.com/your-org/jxproxy.git
+git clone https://github.com/marshaljlee/jxproxy.git
 cd jxproxy
 bun install
 
@@ -216,7 +219,7 @@ The extra prompt-level restrictions injected by upstream are removed by:
 
 ### Proxy Integration
 The proxy server is a lightweight [Hono](https://hono.dev/) app running on Fastify that:
-1. Listens on `127.0.0.1:<port>` (default 2099)
+1. Listens on `127.0.0.1:<port>` (default 5529)
 2. Exposes the exact same API surface as `api.anthropic.com` (`/v1/messages`, `/v1/models`, `/v1/messages/count_tokens`)
 3. Routes requests to the configured provider based on model name matching
 4. Handles protocol conversion between Anthropic Messages, OpenAI Chat, and OpenAI Responses formats

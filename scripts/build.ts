@@ -9,7 +9,8 @@
  *   bun run scripts/build.ts
  *   bun run scripts/build.ts --dev              # Dev variant with debug info
  *   bun run scripts/build.ts --feature=EXTRA    # Add a specific feature flag
- *   bun run scripts/build.ts --target=linux-arm64  # Cross-compile target
+ *   bun run scripts/build.ts --target=linux-arm64    # Cross-compile target
+ *   bun run scripts/build.ts --target=bun-windows-arm64  # Windows ARM64 cross-compile (Bun 1.2+)
  *
  * Based on the free-code build system.
  */
@@ -204,7 +205,7 @@ const cmd = [
   "--define", `MACRO.PACKAGE_URL="@jxproxy/cli"`,
   "--define", `MACRO.NATIVE_PACKAGE_URL=undefined`,
   "--define", `MACRO.FEEDBACK_CHANNEL="github"`,
-  "--define", `MACRO.ISSUES_EXPLAINER="Report issues at github.com/your-org/jxproxy"`,
+  "--define", `MACRO.ISSUES_EXPLAINER="Report issues at github.com/marshaljlee/jxproxy"`,
   "--define", `process.env.NODE_ENV="${isDev ? "development" : "production"}"`,
   "--define", `process.env.CLAUDE_CODE_EXPERIMENTAL_BUILD="${isDev ? "true" : "true"}"`,
   "--define", `process.env.USER_TYPE="external"`,
@@ -230,7 +231,7 @@ if (proc.exitCode !== 0) {
 }
 
 // Make executable
-await $`chmod 0o755 ${OUT_FILE}`;
+await $`chmod 755 ${OUT_FILE}`;
 
 // --- Build Proxy Binary Separately ---
 
@@ -259,7 +260,7 @@ if (existsSync(PROXY_ENTRY)) {
   });
 
   if (proxyProc.exitCode === 0) {
-    await $`chmod 0o755 ${PROXY_OUT}`;
+    await $`chmod 755 ${PROXY_OUT}`;
     console.log(`\n  ✓ jxproxy proxy built: ${PROXY_OUT}`);
   } else {
     console.warn(`  ⚠ Proxy build failed (exit ${proxyProc.exitCode}) — CLI only`);

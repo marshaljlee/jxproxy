@@ -9,7 +9,9 @@
 | Linux (x64) | x86_64 | ✅ | `install.sh` | Native ELF binary. |
 | Linux (arm64) | aarch64 | ✅ | `install.sh` | Native ELF binary. Also used as base for Android. |
 | Windows 10/11 | x64 | ✅ | `install.ps1` | PE binary via `bun build --compile --target bun-windows-x64`. |
+| Windows 11 on ARM | arm64 | ✅ | `install.ps1` | PE binary via `bun build --compile --target bun-windows-arm64` (Bun 1.2+). Auto-detected. |
 | Android 8+ | aarch64 | ✅ | `install-android.sh` | ELF binary + patchelf for Termux glibc compatibility. |
+| Android 8+ (Chromebooks/Tablets) | x86_64 | ✅ | `install-android.sh` | Same process — linux-x64 binary + ELF patching. Auto-detected. |
 | iOS (iSH) | x86_64 | 🚧 Experimental | Manual | Linux x64 binary inside iSH app. Performance limited. |
 
 ## Installation Guides
@@ -18,10 +20,10 @@
 
 ```bash
 # Option 1: Direct install
-curl -fsSL https://raw.githubusercontent.com/your-org/jxproxy/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/marshaljlee/jxproxy/main/install.sh | bash
 
 # Option 2: Build from source
-git clone https://github.com/your-org/jxproxy.git
+git clone https://github.com/marshaljlee/jxproxy.git
 cd jxproxy
 bun run bootstrap
 bun run build
@@ -40,7 +42,7 @@ jxproxy
 
 ```bash
 # Install
-curl -fsSL https://raw.githubusercontent.com/your-org/jxproxy/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/marshaljlee/jxproxy/main/install.sh | bash
 
 # With custom provider
 curl -fsSL ... | bash -s -- --provider=openrouter
@@ -52,7 +54,7 @@ Same binary locations as macOS.
 
 ```powershell
 # PowerShell (Run as Administrator)
-iwr -useb https://raw.githubusercontent.com/your-org/jxproxy/main/installers/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/marshaljlee/jxproxy/main/installers/install.ps1 | iex
 
 # With custom options
 iwr -useb ... | iex; & "---args" "-Provider=openrouter" "-MinClone"
@@ -80,7 +82,7 @@ iwr -useb ... | iex; & "---args" "-Provider=openrouter" "-MinClone"
 pkg update && pkg upgrade
 
 # 3. Install jxproxy
-curl -fsSL https://raw.githubusercontent.com/your-org/jxproxy/main/installers/install-android.sh | bash
+curl -fsSL https://raw.githubusercontent.com/marshaljlee/jxproxy/main/installers/install-android.sh | bash
 
 # 4. Launch
 jxproxy-launcher
@@ -102,7 +104,7 @@ jxproxy-launcher
 apk add curl git
 
 # 3. Install jxproxy
-curl -fsSL https://raw.githubusercontent.com/your-org/jxproxy/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/marshaljlee/jxproxy/main/install.sh | bash
 
 # 4. Launch
 jxproxy
@@ -133,12 +135,12 @@ All platforms support the same environment variables. You can:
 
 ### Proxy Port
 
-The default port is **2099**. This can be changed via `JXPROXY_PORT` or the config file. The port is chosen to avoid conflicts with common services:
+The default port is **5529**. This can be changed via `JXPROXY_PORT` or the config file. The port is chosen to avoid conflicts with common services:
 
 - 8080 → HTTP alternate
 - 3000 → dev servers
 - 11434 → Ollama
-- 2099 → unassigned by IANA (safe)
+- 5529 → unassigned by IANA (safe)
 
 ## Building Platform-Specific Binaries
 
@@ -157,4 +159,7 @@ bun run scripts/build.ts --target=bun-linux-arm64
 
 # Windows (x64 — cross-compile from any platform)
 bun run scripts/build.ts --target=bun-windows-x64
+
+# Windows (ARM64 — cross-compile from any platform)
+bun run scripts/build.ts --target=bun-windows-arm64
 ```

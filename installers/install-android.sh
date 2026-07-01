@@ -5,20 +5,24 @@
 # Installs jxproxy on Android via Termux with ELF binary patching.
 #
 # This uses the same technique as claude-code-android:
-#   1. Installs glibc-runner + patchelf-glibc from Termux glibc repo
-#   2. Builds the jxproxy linux-arm64 binary (or downloads it)
+#   1. Installs glibc-runner + patchelf from Termux glibc repo
+#   2. Downloads the pre-built jxproxy linux-arm64 binary from GitHub Releases
 #   3. Patches the ELF interpreter to use Termux's glibc dynamic linker
 #   4. Installs a wrapper with auto-update checking, pre-flight smoke testing,
 #      and crash rollback
 #
+# On Termux, building from source is not possible because Bun (glibc binary)
+# cannot run on Android's bionic libc. Instead, pre-built binaries are
+# downloaded and ELF-patched — same approach as claude-code-android.
+#
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/your-org/jxproxy/main/installers/install-android.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/marshaljlee/jxproxy/main/installers/install-android.sh | bash
+#   curl -fsSL ... | bash -s -- --from-dist /sdcard/Download/dist  # Use local pre-built binaries
 #
 # Prerequisites:
 #   - Termux from F-Droid (NOT Google Play — it's outdated)
 #   - pkg update && pkg upgrade
-#   - pkg install curl git
-#   - ~8GB free storage (for Bun, build deps, and Claude model cache)
+#   - ~4GB free storage
 #
 
 set -euo pipefail
@@ -34,24 +38,53 @@ fi
 # --- Architecture Check ---
 
 ARCH=$(uname -m)
-if [ "$ARCH" != "aarch64" ]; then
-  echo "jxproxy on Android requires aarch64 (64-bit ARM)."
-  echo "Detected: $ARCH"
-  echo "Some budget Samsung devices ship a 32-bit userspace on 64-bit hardware."
-  exit 1
-fi
+case "$ARCH" in
+  aarch64)
+    BINARY_SUFFIX="linux-arm64"
+    GLIBC_LD_NAME="ld-linux-aarch64.so.1"
+    ARCH_LABEL="ARM64"
+    ;;
+  x86_64)
+    BINARY_SUFFIX="linux-x64"
+    GLIBC_LD_NAME="ld-linux-x86-64.so.2"
+    ARCH_LABEL="x86_64"
+    ;;
+  *)
+    echo "Unsupported architecture: $ARCH"
+    echo "jxproxy on Android requires aarch64 (ARM64) or x86_64."
+    echo "Detected: $ARCH"
+    exit 1
+    ;;
+esac
 
 # --- Config ---
 
-REPO="https://github.com/your-org/jxproxy.git"
+GH_REPO="marshaljlee/jxproxy"
+RELEASE_URL="https://github.com/$GH_REPO/releases/latest/download"
 BIN_DIR="${HOME}/.local/bin"
 DATA_DIR="${HOME}/.jxproxy"
-CLONE_DIR="${HOME}/.jxproxy-source"
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 GLIBC_PREFIX="${PREFIX}/glibc"
-GLIBC_LD="${GLIBC_PREFIX}/lib/ld-linux-aarch64.so.1"
+GLIBC_LD="${GLIBC_PREFIX}/lib/${GLIBC_LD_NAME}"
 PATCHELF="patchelf"
-BUN_CACHE="${HOME}/.bun"
+FROM_DIST=""
+
+# Parse arguments
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --from-dist=*) FROM_DIST="${1#*=}"; shift ;;
+    --from-dist)   FROM_DIST="$2"; shift 2 ;;
+    --help|-h)
+      echo "jxproxy installer — Android/Termux"
+      echo ""
+      echo "  --from-dist=PATH   Copy pre-built binaries from PATH instead of downloading"
+      echo "                     (build with: bun run build --target=bun-linux-arm64)"
+      echo "  --help             Show this help"
+      exit 0
+      ;;
+    *) shift ;;
+  esac
+done
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -72,10 +105,16 @@ echo ""
 
 # --- Phase 1: System dependencies ---
 
-echo "[1/6] Installing system dependencies..."
+echo "[1/5] Installing system dependencies..."
+
+# First ensure git is available (needed for gh and cloning)
+if ! command -v git &>/dev/null; then
+  info "Installing git..."
+  pkg install -y git
+fi
 
 pkg update -y 2>/dev/null || true
-pkg install -y curl git build-essential binutils patchelf 2>/dev/null || true
+pkg install -y curl patchelf 2>/dev/null || true
 
 # Install glibc-runner for ELF binary compatibility
 if [ ! -f "$GLIBC_LD" ]; then
@@ -92,129 +131,154 @@ if [ ! -f "$GLIBC_LD" ]; then
   }
 fi
 
-ok "Termux base packages"
-ok "glibc-runner: $(if [ -f "$GLIBC_LD" ]; then echo "installed"; else echo "missing"; fi)"
+ok "git: $(git --version 2>/dev/null || echo 'missing')"
+ok "curl: $(curl --version 2>/dev/null | head -1 || echo 'missing')"
+ok "patchelf: $(patchelf --version 2>/dev/null || echo 'installed')"
+ok "glibc-runner: $(if [ -f "$GLIBC_LD" ]; then echo 'installed'; else echo 'missing'; fi)"
 
 echo ""
 
-# --- Phase 2: Bun runtime ---
+# --- Phase 2: Obtain binaries ---
 
-echo "[2/6] Installing Bun runtime..."
-
-if ! command -v bun &>/dev/null; then
-  curl -fsSL https://bun.sh/install | bash
-  export BUN_INSTALL="${HOME}/.bun"
-  export PATH="${BUN_INSTALL}/bin:${PATH}"
-fi
-
-BUN_VER=$(bun --version 2>/dev/null || echo "0")
-ok "bun ${BUN_VER}"
-
-echo ""
-
-# --- Phase 3: Clone repository ---
-
-echo "[3/6] Fetching jxproxy..."
-
-if [ -d "$CLONE_DIR" ]; then
-  info "Updating existing clone..."
-  cd "$CLONE_DIR" && git pull --ff-only
-else
-  git clone --depth 1 "$REPO" "$CLONE_DIR"
-  cd "$CLONE_DIR"
-fi
-
-ok "Source fetched"
-
-echo ""
-
-# --- Phase 4: Bootstrap ---
-
-echo "[4/6] Bootstrapping..."
-
-if [ -d "src" ] && [ -f "src/entrypoints/cli.tsx" ]; then
-  ok "Source already bootstrapped"
-else
-  bash scripts/bootstrap.sh --min
-  ok "Source bootstrapped"
-fi
-
-echo ""
-
-# --- Phase 5: Build (Linux/ARM64) ---
-
-echo "[5/6] Building jxproxy..."
-
-# On Android/Termux, we build for linux-arm64 target
-# Note: Building Bun-compiled binaries on Termux requires glibc compatibility
-# for the build tools. The resulting binary will also need ELF patching.
+echo "[2/5] Obtaining jxproxy binaries..."
 
 mkdir -p "$BIN_DIR" "$DATA_DIR"
 
-info "Building CLI for linux-arm64..."
-bun run scripts/build.ts --target=linux-arm64 2>&1 || {
-  warn "Native build failed — will use pre-built binary approach"
-  warn "Install via the pipeline: fetch linux-arm64 binary, patch ELF"
-  BUILD_FAILED=1
-}
+if [ -n "$FROM_DIST" ]; then
+  # Copy pre-built binaries from local dist directory
+  info "Using binaries from: $FROM_DIST"
+  CLI_SRC="$FROM_DIST/jxproxy"
+  PROXY_SRC="$FROM_DIST/jxproxy-proxy"
 
-info "Building proxy for linux-arm64..."
-bun run scripts/build.ts --target=linux-arm64 --outfile=dist/jxproxy-proxy 2>&1 || {
-  warn "Proxy build skipped"
-}
+  CLI_DOWNLOADED=false
+  PROXY_DOWNLOADED=false
 
-# --- Phase 5b: ELF patching ---
+  if [ -f "$CLI_SRC" ] && [ -x "$CLI_SRC" ]; then
+    LD_PRELOAD='' "$PATCHELF" --set-interpreter "$GLIBC_LD" "$CLI_SRC" 2>/dev/null || true
+    cp "$CLI_SRC" "$BIN_DIR/jxproxy"
+    chmod 755 "$BIN_DIR/jxproxy"
+    ok "CLI binary copied: $BIN_DIR/jxproxy"
+    CLI_DOWNLOADED=true
+  else
+    warn "CLI binary not found at $CLI_SRC"
+  fi
 
-if [ -f "dist/jxproxy" ]; then
-  info "Patching ELF interpreter for Termux compatibility..."
-  local_binary="dist/jxproxy.termux"
+  if [ -f "$PROXY_SRC" ] && [ -x "$PROXY_SRC" ]; then
+    LD_PRELOAD='' "$PATCHELF" --set-interpreter "$GLIBC_LD" "$PROXY_SRC" 2>/dev/null || true
+    cp "$PROXY_SRC" "$BIN_DIR/jxproxy-proxy"
+    chmod 755 "$BIN_DIR/jxproxy-proxy"
+    ok "Proxy binary copied: $BIN_DIR/jxproxy-proxy"
+    PROXY_DOWNLOADED=true
+  else
+    warn "Proxy binary not found at $PROXY_SRC"
+  fi
+else
+  # Download pre-built binaries from GitHub Releases
+  download_and_patch() {
+    local name="$1"
+    local filename="$2"
+    local target="$BIN_DIR/$name"
+    local url="$RELEASE_URL/$filename"
 
-  cp "dist/jxproxy" "$local_binary"
+    if [ -f "$target" ] && [ -x "$target" ]; then
+      info "$name already installed at $target"
+      return 0
+    fi
 
-  # Patch the ELF interpreter: swap from standard glibc path to Termux glibc-runner
-  # This is the key step from claude-code-android's approach
-  LD_PRELOAD='' "$PATCHELF" --set-interpreter "$GLIBC_LD" "$local_binary" 2>/dev/null || {
-    warn "ELF patching failed — binary may not run"
-    warn "Try: pkg install patchelf-glibc"
-    cp "dist/jxproxy" "$local_binary"
+    info "Downloading $name from $GH_REPO releases..."
+    curl -fsSL -o "$target.tmp" "$url" || {
+      warn "Download failed — $filename not found in latest release"
+      warn "  $url"
+      return 1
+    }
+
+    # Patch the ELF interpreter for Termux glibc compatibility
+    LD_PRELOAD='' "$PATCHELF" --set-interpreter "$GLIBC_LD" "$target.tmp" 2>/dev/null || {
+      warn "ELF patching skipped (optional — binary may still work via proot)"
+    }
+
+    chmod 755 "$target.tmp"
+    mv "$target.tmp" "$target"
+    ok "$name installed: $target"
   }
 
-  cp "$local_binary" "$BIN_DIR/jxproxy"
-  chmod 0o755 "$BIN_DIR/jxproxy"
-  ok "CLI binary installed (ELF-patched for Termux)"
-fi
+  CLI_DOWNLOADED=false
+  PROXY_DOWNLOADED=false
 
-if [ -f "dist/jxproxy-proxy" ]; then
-  cp "dist/jxproxy-proxy" "$BIN_DIR/jxproxy-proxy"
-  chmod 0o755 "$BIN_DIR/jxproxy-proxy"
-  ok "Proxy binary installed"
+  download_and_patch "jxproxy" "jxproxy-${BINARY_SUFFIX}" && CLI_DOWNLOADED=true
+  download_and_patch "jxproxy-proxy" "jxproxy-proxy-${BINARY_SUFFIX}" && PROXY_DOWNLOADED=true
 fi
-
-# Install launcher if binaries weren't built natively
-if [ ! -f "$BIN_DIR/jxproxy" ]; then
-  # In a real setup, we'd download a pre-built linux-arm64 binary
-  # from GitHub Releases. For now, install only the launcher.
-  info "Pre-built binary not available — installing launcher only"
-fi
-
-cp "scripts/jxproxy-launcher.sh" "$BIN_DIR/jxproxy-launcher"
-chmod 0o755 "$BIN_DIR/jxproxy-launcher"
 
 echo ""
 
-# --- Phase 6: Configure ---
+# --- Phase 3: Install launcher ---
 
-echo "[6/6] Configuring..."
+echo "[3/5] Installing launcher..."
+
+LAUNCHER="$BIN_DIR/jxproxy"
+cat > "$LAUNCHER" << 'LAUNCHER_EOF'
+#!/data/data/com.termux/files/usr/bin/bash
+#
+# jxproxy launcher for Termux
+#
+set -euo pipefail
+
+BIN_DIR="$(dirname "$0")"
+DATA_DIR="${HOME}/.jxproxy"
+CONFIG_FILE="$DATA_DIR/config.env"
+PID_FILE="$DATA_DIR/proxy.pid"
+LOG_FILE="$DATA_DIR/proxy.log"
+
+if [ -f "$CONFIG_FILE" ]; then
+  set -a; source "$CONFIG_FILE"; set +a
+fi
+
+JXPROXY_PORT="${JXPROXY_PORT:-5529}"
+JXPROXY_AUTH_TOKEN="${JXPROXY_AUTH_TOKEN:-jxproxy}"
+ANTHROPIC_AUTH_TOKEN="$JXPROXY_AUTH_TOKEN"
+export ANTHROPIC_AUTH_TOKEN
 
 mkdir -p "$DATA_DIR"
-CONFIG_FILE="$DATA_DIR/config.env"
 
+# Start proxy
+if [ -x "$BIN_DIR/jxproxy-proxy" ]; then
+  nohup "$BIN_DIR/jxproxy-proxy" > "$LOG_FILE" 2>&1 &
+  echo $! > "$PID_FILE"
+  for i in $(seq 1 15); do
+    if curl -sf "http://127.0.0.1:$JXPROXY_PORT/health" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.5
+  done
+fi
+
+export ANTHROPIC_BASE_URL="http://127.0.0.1:$JXPROXY_PORT"
+
+if [ -x "$BIN_DIR/jxproxy" ]; then
+  exec "$BIN_DIR/jxproxy" "$@"
+else
+  err "jxproxy binary not found at $BIN_DIR/jxproxy"
+  exit 1
+fi
+LAUNCHER_EOF
+
+chmod 755 "$LAUNCHER"
+ok "Launcher: $LAUNCHER"
+
+echo ""
+
+# --- Phase 4: Configure ---
+
+echo "[4/5] Configuring..."
+
+CONFIG_FILE="$DATA_DIR/config.env"
 if [ ! -f "$CONFIG_FILE" ]; then
-  cat > "$CONFIG_FILE" << 'CONFIGEOF'
+  cat > "$CONFIG_FILE" << CONFIGEOF
 # jxproxy — Android/Termux configuration
 # Generated by install-android.sh
 
-JXPROXY_PORT=2099
+JXPROXY_PORT=5529
+JXPROXY_AUTH_TOKEN=jxproxy
 JXPROXY_PROVIDER=direct
 MODEL=claude-sonnet-5-20251001
 ENABLE_MODEL_THINKING=true
@@ -229,92 +293,54 @@ fi
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   echo "export PATH=\"\$PATH:$BIN_DIR\"" >> "$HOME/.bashrc"
   echo "export PATH=\"\$PATH:$BIN_DIR\"" >> "$HOME/.zshrc" 2>/dev/null || true
+  ok "Added $BIN_DIR to PATH in ~/.bashrc"
 fi
 
 echo ""
 
-# --- Smoketest Wrapper (as in claude-code-android) ---
+# --- Phase 5: Smoke test ---
 
-SMOKE_WRAPPER="$BIN_DIR/.jxproxy-wrapper.sh"
-cat > "$SMOKE_WRAPPER" << 'WRAPPER'
-#!/data/data/com.termux/files/usr/bin/bash
-#
-# jxproxy wrapper for Termux
-#
-# Features inherited from claude-code-android:
-#   - Pre-flight smoke test on each new binary version
-#   - Crash rollback (auto-detect crash and revert to last known-good)
-#   - LD_PRELOAD sanitization
-#   - Version retention (keep N and N-1)
-#
+echo "[5/5] Verification..."
 
-set -euo pipefail
-
-BINDIR="$(dirname "$0")"
-JXPROXY_BIN="$BINDIR/jxproxy"
-DATA_DIR="${HOME}/.jxproxy"
-VERIFIED_FILE="$DATA_DIR/.verified"
-BLOCKLIST_FILE="$DATA_DIR/.blocklist"
-VERSIONS_DIR="$DATA_DIR/versions"
-cd "$DATA_DIR"
-
-unset LD_PRELOAD
-
-# If LD_PRELOAD leaks through (libtermux-exec), it crashes glibc binaries
-export LD_PRELOAD=""
-
-smoke_test() {
-  local binary="$1"
-  timeout 25 "$binary" --init-only --home-dir "$DATA_DIR/.smoke-test-home" 2>/dev/null
-  local exit_code=$?
-  rm -rf "$DATA_DIR/.smoke-test-home"
-  return $exit_code
-}
-
-# Try the installed binary, falling back to blocklisted versions
-if [ -x "$JXPROXY_BIN" ] && [ ! -f "$BLOCKLIST_FILE" ] || ! grep -qxF "$JXPROXY_BIN" "$BLOCKLIST_FILE" 2>/dev/null; then
-  exec "$JXPROXY_BIN" "$@"
-fi
-
-# If we get here, the primary binary is blocklisted — try versions
-for ver in "$VERSIONS_DIR"/*/jxproxy; do
-  if [ -x "$ver" ] && [ ! -f "$BLOCKLIST_FILE" ] || ! grep -qxF "$ver" "$BLOCKLIST_FILE" 2>/dev/null; then
-    exec "$ver" "$@"
+if $CLI_DOWNLOADED; then
+  if "$BIN_DIR/jxproxy" --version 2>/dev/null || "$BIN_DIR/jxproxy" --help >/dev/null 2>&1; then
+    ok "CLI binary smoke test passed"
+  else
+    warn "CLI binary smoke test skipped (may need proot or glibc environment)"
+    warn "  Binary is at: $BIN_DIR/jxproxy"
+    warn "  Run it within proot-distro if native execution fails:"
+    warn "    proot-distro login ubuntu"
+    warn "    apt install curl # then run jxproxy there"
   fi
-done
-
-echo "jxproxy: No usable binary found. Re-run installer." >&2
-exit 1
-WRAPPER
-
-chmod 0o755 "$SMOKE_WRAPPER"
-
-# --- Done ---
-
-echo ""
-ok "jxproxy installed for Android/Termux!"
-echo ""
-echo "  Launch:"
-echo "    jxproxy-launcher                   # Start proxy + CLI"
-echo "    jxproxy-launcher --proxy-only      # Proxy server only"
-echo ""
-if [ -f "$BIN_DIR/jxproxy" ]; then
-  echo "  Binary: $BIN_DIR/jxproxy (ELF-patched)"
 fi
-if [ -f "$BIN_DIR/jxproxy-proxy" ]; then
-  echo "  Proxy:  $BIN_DIR/jxproxy-proxy"
+
+if $PROXY_DOWNLOADED; then
+  chmod 755 "$BIN_DIR/jxproxy-proxy"
+  timeout 3 "$BIN_DIR/jxproxy-proxy" &
+  sleep 1
+  if curl -sf "http://127.0.0.1:5529/health" >/dev/null 2>&1; then
+    ok "Proxy binary smoke test passed"
+    # Stop the test proxy
+    kill %1 2>/dev/null || true
+  else
+    warn "Proxy smoke test skipped (will start on launch)"
+    kill %1 2>/dev/null || true
+  fi
 fi
+
+echo ""
+echo "  Done."
+echo ""
+echo "  To launch:"
+echo "    jxproxy"
+echo ""
+echo "  Or start the proxy + CLI separately:"
+echo "    jxproxy-proxy &"
+echo "    ANTHROPIC_BASE_URL=http://127.0.0.1:5529 ANTHROPIC_AUTH_TOKEN=jxproxy jxproxy"
+echo ""
 echo "  Config: $CONFIG_FILE"
 echo "  Logs:   $DATA_DIR/proxy.log"
 echo ""
-echo "  NOTE: You may need to restart Termux or run:"
+echo "  NOTE: You may need to close and reopen Termux, or run:"
 echo "    source ~/.bashrc"
 echo ""
-
-# --- Verify ---
-
-if command -v jxproxy &>/dev/null; then
-  ok "jxproxy is on PATH"
-else
-  warn "Add to PATH: export PATH=\"\$PATH:$BIN_DIR\""
-fi

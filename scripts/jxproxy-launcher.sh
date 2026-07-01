@@ -12,7 +12,7 @@
 #   ./jxproxy -- --help        # Pass flags through to Claude CLI
 #
 # Environment:
-#   JXPROXY_PORT             — Proxy listen port (default: 2099)
+#   JXPROXY_PORT             — Proxy listen port (default: 5529)
 #   JXPROXY_PROVIDER         — Provider backend (default: direct)
 #   JXPROXY_DATA_DIR         — Config/data directory (default: ~/.jxproxy)
 #   JXPROXY_CLI_BINARY       — Path to the CLI binary (default: auto-detect)
@@ -23,7 +23,7 @@ set -euo pipefail
 
 # --- Configuration ---
 
-JXPROXY_PORT="${JXPROXY_PORT:-2099}"
+JXPROXY_PORT="${JXPROXY_PORT:-5529}"
 JXPROXY_PROVIDER="${JXPROXY_PROVIDER:-direct}"
 JXPROXY_DATA_DIR="${JXPROXY_DATA_DIR:-$HOME/.jxproxy}"
 JXPROXY_PID_FILE="$JXPROXY_DATA_DIR/proxy.pid"
@@ -77,7 +77,7 @@ Usage:
   jxproxy --help           Show this help
 
 Environment:
-  JXPROXY_PORT             Proxy port (default: 2099)
+  JXPROXY_PORT             Proxy port (default: 5529)
   JXPROXY_PROVIDER         Provider: direct, openrouter, openai, local
   ANTHROPIC_API_KEY        API key for direct Anthropic routing
   OPENROUTER_API_KEY       API key for OpenRouter routing
@@ -283,8 +283,8 @@ export CLAUDE_CODE_AUTO_COMPACT_WINDOW="190000"
 export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY="true"
 export CLAUDE_CODE_VERIFY_PLAN="false"
 
-# Strip any original Anthropic credentials that would bypass the proxy
-unset ANTHROPIC_AUTH_TOKEN 2>/dev/null || true
+# Set auth token so Claude Code sends it as x-api-key to the proxy
+export ANTHROPIC_AUTH_TOKEN="jxproxy"
 
 info "Launching CLI (ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL)..."
 echo ""

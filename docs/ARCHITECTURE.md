@@ -48,7 +48,7 @@ The CLI is based on the **free-code** source fork, which is itself based on the 
 |-------|-------------|
 | `0001-strip-telemetry.patch` | Stubs OpenTelemetry, Sentry, GrowthBook, and all custom event logging. Session fingerprinting returns a static ID. |
 | `0002-remove-guardrails.patch` | Removes hardcoded refusal patterns, "cyber risk" instruction blocks injected into system prompts, and managed-settings polling. |
-| `0003-proxy-routing.patch` | Changes the default `ANTHROPIC_BASE_URL` from `https://api.anthropic.com` to `http://127.0.0.1:2099`. The auth check always returns true (proxy handles auth). |
+| `0003-proxy-routing.patch` | Changes the default `ANTHROPIC_BASE_URL` from `https://api.anthropic.com` to `http://127.0.0.1:5529`. The auth token is set by the launcher via `ANTHROPIC_AUTH_TOKEN=jxproxy`. |
 
 **Build process** (`scripts/build.ts`):
 - Input: `src/entrypoints/cli.tsx` + 55 feature flags
@@ -81,7 +81,9 @@ A lightweight HTTP server built on `Bun.serve()` with zero external dependencies
 |----------|----------|-------------|
 | `direct` | Anthropic Messages | Passes requests to `api.anthropic.com` with your API key |
 | `openrouter` | OpenAI Chat → Anthropic SSE | Converts to OpenAI Chat format, routes via OpenRouter, converts SSE back |
-| `openai` | OpenAI Chat | Translates Magic Patterns → OpenAI format → Chat Completions |
+| `opencode-zen` | OpenAI Chat | Routes to `opencode.ai/zen/v1`, uses `OPENCODE_API_KEY` |
+| `opencode-go` | OpenAI Chat | Routes to `opencode.ai/zen/go/v1`, shares `OPENCODE_API_KEY` |
+| `openai` | OpenAI Chat | Translates to OpenAI Chat format → Chat Completions |
 | `local` | OpenAI Chat | Routes to a local LLM endpoint (Ollama, LM Studio, llama.cpp) |
 
 **Model routing** resolves incoming model names:
@@ -101,6 +103,7 @@ A lightweight HTTP server built on `Bun.serve()` with zero external dependencies
 - Proxy PID file at `~/.jxproxy/proxy.pid`
 - Health-check loop before launching CLI
 - Graceful rollback on proxy startup failure
+- Sets `ANTHROPIC_AUTH_TOKEN=jxproxy` so Claude Code authenticates with the proxy
 - Passes `$@` through to the CLI binary
 - Sets `ANTHROPIC_BASE_URL`, auto-compact window, gateway model discovery
 
@@ -117,8 +120,10 @@ A lightweight HTTP server built on `Bun.serve()` with zero external dependencies
 | macOS (arm64) | Native mach-o | Standard `bun build --compile` |
 | macOS (x64) | Native mach-o | Standard `bun build --compile` |
 | Linux (arm64/x64) | Native ELF | Standard `bun build --compile` |
-| Android (Termux) | ELF → ELF-patched | `patchelf --set-interpreter` to Termux glibc-runner |
+| Android (Termux) aarch64 | ELF → ELF-patched | `patchelf --set-interpreter` to Termux glibc-runner |
+| Android (Termux) x86_64 | ELF → ELF-patched | Same — `patchelf` with `ld-linux-x86-64.so.2` |
 | Windows (x64) | PE | `bun build --compile --target=bun-windows-x64` |
+| Windows (ARM64) | PE | `bun build --compile --target=bun-windows-arm64` (Bun 1.2+) |
 | iOS (a-Shell) | ELF (via iSH) | Linux arm64 binary in iSH Linux environment |
 
 ### Android ELF Patching
@@ -182,7 +187,7 @@ if (MACRO.FEATURE_ULTRAPLAN) {
 
 ```bash
 # First time setup
-git clone https://github.com/your-org/jxproxy.git
+git clone https://github.com/marshaljlee/jxproxy.git
 cd jxproxy
 bun run bootstrap    # Fetch free-code source + apply patches
 bun run build        # Build the CLI + proxy binaries

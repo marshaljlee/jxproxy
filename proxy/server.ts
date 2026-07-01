@@ -19,14 +19,16 @@
  *   # or embedded: bun build ./proxy/server.ts --compile
  *
  * Environment:
- *   JXPROXY_PORT          — Proxy listen port (default: 2099)
- *   JXPROXY_PROVIDER      — Provider backend (direct, openrouter, openai, local)
+ *   JXPROXY_PORT          — Proxy listen port (default: 5529)
+ *   JXPROXY_PROVIDER      — Provider backend (direct, openrouter, opencode-zen, opencode-go, openai, local)
+ *   JXPROXY_AUTH_TOKEN    — Token Claude Code sends as x-api-key (default: jxproxy)
  *   ANTHROPIC_API_KEY     — API key for direct Anthropic routing
  *   OPENROUTER_API_KEY    — API key for OpenRouter routing
+ *   OPENCODE_API_KEY      — API key for OpenCode Zen/Go
  *   MODEL, MODEL_OPUS, MODEL_SONNET, MODEL_HAIKU — Model routing
  */
 
-const DEFAULT_PORT = 2099;
+const DEFAULT_PORT = 5529;
 
 // --- Type Definitions ---
 
@@ -65,15 +67,18 @@ interface ModelInfo {
 
 interface ProxyConfig {
   port: number;
-  provider: "direct" | "openrouter" | "openai" | "local";
+  provider: "direct" | "openrouter" | "opencode-zen" | "opencode-go" | "openai" | "local";
   anthropicApiKey: string;
   openrouterApiKey: string;
+  opencodeApiKey: string;
   openaiApiKey: string;
   model: string;
   modelOpus: string;
   modelSonnet: string;
   modelHaiku: string;
   enableThinking: boolean;
+  authToken: string;
+  openaiBaseUrl: string;
   localLlmBaseUrl: string;
   localLlmModel: string;
 }
@@ -84,12 +89,15 @@ function loadConfig(): ProxyConfig {
     provider: (process.env.JXPROXY_PROVIDER || "direct") as ProxyConfig["provider"],
     anthropicApiKey: process.env.ANTHROPIC_API_KEY || "",
     openrouterApiKey: process.env.OPENROUTER_API_KEY || "",
+    opencodeApiKey: process.env.OPENCODE_API_KEY || "",
     openaiApiKey: process.env.OPENAI_API_KEY || "",
     model: process.env.MODEL || "claude-sonnet-5-20251001",
     modelOpus: process.env.MODEL_OPUS || "",
     modelSonnet: process.env.MODEL_SONNET || "",
     modelHaiku: process.env.MODEL_HAIKU || "",
     enableThinking: process.env.ENABLE_MODEL_THINKING !== "false",
+    authToken: process.env.JXPROXY_AUTH_TOKEN || "jxproxy",
+    openaiBaseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
     localLlmBaseUrl: process.env.LOCAL_LLM_BASE_URL || "http://127.0.0.1:11434/v1",
     localLlmModel: process.env.LOCAL_LLM_MODEL || "qwen3:latest",
   };
@@ -119,8 +127,12 @@ function resolveBaseUrl(config: ProxyConfig): string {
       return "https://api.anthropic.com";
     case "openrouter":
       return "https://openrouter.ai/api/v1";
+    case "opencode-zen":
+      return "https://opencode.ai/zen/v1";
+    case "opencode-go":
+      return "https://opencode.ai/zen/go/v1";
     case "openai":
-      return "https://api.openai.com/v1";
+      return config.openaiBaseUrl;
     case "local":
       return config.localLlmBaseUrl;
   }
@@ -132,6 +144,9 @@ function resolveApiKey(config: ProxyConfig): string {
       return config.anthropicApiKey;
     case "openrouter":
       return config.openrouterApiKey;
+    case "opencode-zen":
+    case "opencode-go":
+      return config.opencodeApiKey;
     case "openai":
       return config.openaiApiKey;
     case "local":
@@ -434,7 +449,7 @@ async function routeToOpenRouter(
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": "https://github.com/your-org/jxproxy",
+      "HTTP-Referer": "https://github.com/marshaljlee/jxproxy",
       "X-Title": "jxproxy",
     },
     body: JSON.stringify(toOpenAIChat(body)),
@@ -588,11 +603,33 @@ function buildModelList(config: ProxyConfig): ModelInfo[] {
 
 // --- Server Implementation ---
 
+function requireAuth(req: Request, config: ProxyConfig): Response | null {
+  const token = config.authToken;
+  if (!token) return null; // empty = no auth required
+
+  const xApiKey = req.headers.get("x-api-key");
+  const authHeader = req.headers.get("Authorization");
+  const bearer = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+
+  const provided = xApiKey || bearer;
+  if (provided === token) return null;
+
+  return new Response(
+    JSON.stringify({
+      type: "error",
+      error: { type: "authentication_error", message: "Invalid or missing auth token" },
+    }),
+    { status: 401, headers: { "Content-Type": "application/json" } },
+  );
+}
+
 function createServer(config: ProxyConfig) {
   const configMap = new Map<string, (req: MessagesRequest) => Promise<Response>>();
 
   configMap.set("direct", (req) => routeToAnthropicDirect(req, config));
   configMap.set("openrouter", (req) => routeToOpenRouter(req, config));
+  configMap.set("opencode-zen", (req) => routeToOpenAI(req, config));
+  configMap.set("opencode-go", (req) => routeToOpenAI(req, config));
   configMap.set("openai", (req) => routeToOpenAI(req, config));
   configMap.set("local", (req) => routeToLocal(req, config));
 
@@ -609,6 +646,9 @@ function createServer(config: ProxyConfig) {
             headers: { Allow: "POST, HEAD, OPTIONS" },
           });
         }
+
+        const authErr = requireAuth(req, config);
+        if (authErr) return authErr;
 
         let body: MessagesRequest;
         try {
@@ -630,6 +670,8 @@ function createServer(config: ProxyConfig) {
             headers: { Allow: "POST, HEAD, OPTIONS" },
           });
         }
+        const authErr = requireAuth(req, config);
+        if (authErr) return authErr;
         const body = await req.json() as MessagesRequest;
         return handleTokenCount(body, config);
       },
