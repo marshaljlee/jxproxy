@@ -1,0 +1,219 @@
+#requires -Version 7.0
+
+<#
+.SYNOPSIS
+    jxproxy — Windows Installer (PowerShell)
+
+.DESCRIPTION
+    Installs jxproxy on Windows: the modified Claude Code CLI with proxy routing,
+    telemetry stripped, all features unlocked. Zero callbacks home.
+
+    Uses Bun for the runtime, npm for Claude Code deps, and installs everything
+    into `~\.jxproxy\` and `~\.local\bin\`.
+
+    Usage:
+        iwr -useb https://raw.githubusercontent.com/your-org/jxproxy/main/installers/install.ps1 | iex
+        iwr -useb ... | iex; & "---args" "--provider=direct"
+#>
+
+param(
+    [string]$Provider = "direct",
+    [string]$BinDir = "$HOME\.local\bin",
+    [string]$DataDir = "$HOME\.jxproxy",
+    [string]$Repo = "https://github.com/your-org/jxproxy.git",
+    [switch]$MinClone,
+    [switch]$NoBuild,
+    [switch]$Help
+)
+
+# --- Help ---
+if ($Help) {
+    @"
+jxproxy — Windows Installer
+
+Options:
+    -Provider=NAME    Default provider: direct, openrouter, openai, local
+    -BinDir=PATH      Binary install directory
+    -MinClone         Shallow clone (faster)
+    -NoBuild          Skip compilation, only fetch scripts
+    -Help             Show this help
+"@
+    exit 0
+}
+
+Write-Host ""
+Write-Host "  jxproxy — Windows Installer" -ForegroundColor Cyan
+Write-Host "  =============================="
+Write-Host ""
+
+# --- Check for prerequisites ---
+Write-Host "[1/5] Checking prerequisites..."
+
+# Winget
+$wingetAvailable = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+
+# Scoop
+$scoopAvailable = $null -ne (Get-Command scoop -ErrorAction SilentlyContinue)
+
+# Chocolatey
+$chocoAvailable = $null -ne (Get-Command choco -ErrorAction SilentlyContinue)
+
+# Git
+if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
+    Write-Host "  Installing Git..."
+    if ($wingetAvailable) {
+        winget install --id Git.Git -e --source winget
+    }
+    elseif ($scoopAvailable) {
+        scoop install git
+    }
+    elseif ($chocoAvailable) {
+        choco install git -y
+    }
+    else {
+        Write-Error "Please install Git from https://git-scm.com/download/win and re-run."
+        exit 1
+    }
+}
+Write-Host "  ✓ git"
+
+# Bun
+if ($null -eq (Get-Command bun -ErrorAction SilentlyContinue)) {
+    Write-Host "  Installing Bun runtime..."
+    powershell -c "irm bun.sh/install.ps1 | iex"
+    $env:BUN_INSTALL = "$HOME\.bun"
+    $env:Path += ";$env:BUN_INSTALL\bin"
+}
+
+$bunVer = (bun --version 2>$null) ?? "0"
+Write-Host "  ✓ bun $bunVer"
+Write-Host ""
+
+# --- Clone ---
+Write-Host "[2/5] Cloning jxproxy..."
+$cloneDir = "$HOME\.jxproxy-source"
+
+if (Test-Path "$cloneDir\.git") {
+    Write-Host "  Updating existing clone..."
+    Set-Location $cloneDir
+    git pull --ff-only
+}
+else {
+    if ($MinClone) {
+        git clone --depth 1 $Repo $cloneDir
+    }
+    else {
+        git clone $Repo $cloneDir
+    }
+    Set-Location $cloneDir
+}
+Write-Host ""
+
+# --- Bootstrap ---
+Write-Host "[3/5] Bootstrapping..."
+
+if (Test-Path "src\entrypoints\cli.tsx") {
+    Write-Host "  ✓ Source already present"
+}
+else {
+    $bootstrapArgs = @()
+    if ($MinClone) { $bootstrapArgs += "--min" }
+    & ".\scripts\bootstrap.sh" @bootstrapArgs
+}
+Write-Host ""
+
+# --- Build ---
+Write-Host "[4/5] Building jxproxy..."
+
+New-Item -ItemType Directory -Force -Path $BinDir, $DataDir | Out-Null
+
+if (-not $NoBuild) {
+    Write-Host "  Building CLI (this may take a few minutes)..."
+    bun run build --target=bun-windows-x64 2>&1 | Select-Object -Last 5
+    Write-Host "  ✓ CLI binary built"
+
+    Write-Host "  Building proxy..."
+    bun run build:proxy --target=bun-windows-x64 2>&1 | Select-Object -Last 5
+}
+else {
+    Write-Host "  Skipping build (--no-build flag)"
+}
+Write-Host ""
+
+# --- Install ---
+Write-Host "[5/5] Installing..."
+
+Copy-Item -Path "dist\jxproxy.exe" -Destination "$BinDir\jxproxy.exe" -ErrorAction SilentlyContinue
+Copy-Item -Path "dist\jxproxy-proxy.exe" -Destination "$BinDir\jxproxy-proxy.exe" -ErrorAction SilentlyContinue
+
+# Install launcher script
+$launcherContent = @'
+@echo off
+REM jxproxy — Windows launcher (batch)
+REM Launches proxy server + modified Claude Code CLI
+setlocal enabledelayedexpansion
+
+set "JXPROXY_PORT=2099"
+set "JXPROXY_PROVIDER=direct"
+set "DATA_DIR=%USERPROFILE%\.jxproxy"
+set "BIN_DIR=%~dp0"
+
+REM Load config
+if exist "%DATA_DIR%\config.env" (
+    for /f "tokens=1,* delims==" %%a in (%DATA_DIR%\config.env) do set "%%a=%%b"
+)
+
+REM Start proxy
+start /b "" "%BIN_DIR%\jxproxy-proxy.exe"
+
+REM Wait for proxy
+echo Waiting for proxy to start...
+:waitloop
+timeout /t 1 /nobreak >nul
+curl -sf http://127.0.0.1:%JXPROXY_PORT%/health >nul 2>&1
+if errorlevel 1 goto waitloop
+
+REM Launch CLI through proxy
+set "ANTHROPIC_BASE_URL=http://127.0.0.1:%JXPROXY_PORT%"
+"%BIN_DIR%\jxproxy.exe" %*
+'@
+
+$launcherBat = "$BinDir\jxproxy.bat"
+Set-Content -Path $launcherBat -Value $launcherContent
+Write-Host "  ✓ Launcher: $launcherBat"
+
+# Config file
+$configFile = "$DataDir\config.env"
+if (-not (Test-Path $configFile)) {
+@"
+# jxproxy configuration (Windows)
+# Generated by installer
+
+JXPROXY_PORT=2099
+JXPROXY_PROVIDER=$Provider
+MODEL=claude-sonnet-5-20251001
+ENABLE_MODEL_THINKING=true
+
+# Set your API key:
+# ANTHROPIC_API_KEY=sk-ant-...
+"@ | Set-Content -Path $configFile
+    Write-Host "  ✓ Config: $configFile"
+}
+
+# Add to PATH
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if ($userPath -notlike "*$BinDir*") {
+    [Environment]::SetEnvironmentVariable("Path", "$userPath;$BinDir", "User")
+    $env:Path += ";$BinDir"
+    Write-Host "  ✓ Added to user PATH"
+}
+
+Write-Host ""
+Write-Host "  ✓ jxproxy installed!" -ForegroundColor Green
+Write-Host ""
+Write-Host "  Quick start:"
+Write-Host "    jxproxy            # Launch proxy + CLI"
+Write-Host ""
+Write-Host "  Config: $DataDir\config.env"
+Write-Host "  Binaries: $BinDir"
+Write-Host ""

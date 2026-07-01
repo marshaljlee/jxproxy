@@ -1,0 +1,37 @@
+From: jxproxy <dev@jxproxy.dev>
+Date: Mon, 30 Jun 2026 12:02:00 +0000
+Subject: [PATCH 3/3] Add proxy routing — all Anthropic connections route through
+ the local jxproxy server by default
+
+Modifies the API client to route all traffic through the local proxy
+(127.0.0.1:${JXPROXY_PORT:-2099}) instead of api.anthropic.com.
+
+This is also the fallback if ANTHROPIC_BASE_URL is not set.
+
+diff --git a/src/services/api/fetch-adapter.ts b/src/services/api/fetch-adapter.ts
+--- a/src/services/api/fetch-adapter.ts
++++ b/src/services/api/fetch-adapter.ts
+@@ -1,6 +1,10 @@
+ const ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL
+-  ?? "https://api.anthropic.com";
++  ?? "http://127.0.0.1:2099";
++
++const JXPROXY_PORT = process.env.JXPROXY_PORT ?? "2099";
++
++// If ANTHROPIC_BASE_URL is not explicitly set by the user, route through jxproxy
++const BASE_URL = process.env.ANTHROPIC_BASE_URL || `http://127.0.0.1:${JXPROXY_PORT}`;
+
+ export function getBaseUrl(): string {
+-  return ANTHROPIC_BASE_URL;
++  return BASE_URL;
+ }
+
+diff --git a/src/services/auth.ts b/src/services/auth.ts
+--- a/src/services/auth.ts
++++ b/src/services/auth.ts
+@@ -1,5 +1,5 @@
+ export function isAuthenticated(): boolean {
+-  return !!process.env.ANTHROPIC_API_KEY || !!process.env.ANTHROPIC_AUTH_TOKEN;
++  // jxproxy: auth is managed by the proxy, not checked here
++  return true;
+ }

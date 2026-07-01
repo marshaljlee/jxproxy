@@ -1,0 +1,157 @@
+From: jxproxy <dev@jxproxy.dev>
+Date: Mon, 30 Jun 2026 12:00:00 +0000
+Subject: [PATCH 1/2] Strip all telemetry — OpenTelemetry, Sentry, GrowthBook, custom events
+
+Removes or stubs all outbound telemetry endpoints:
+- OpenTelemetry/gRPC instrumentation entirely removed
+- Sentry initialization and capture calls stubbed
+- GrowthBook analytics reporting channel severed (local evaluation kept for runtime feature gating)
+- Custom event logging (recordEvent, trackMetric, logAction) removed
+- Session fingerprinting eliminated
+
+diff --git a/src/services/api/api.ts b/src/services/api/api.ts
+--- a/src/services/api/api.ts
++++ b/src/services/api/api.ts
+@@ -1,22 +0,0 @@
+-import { trace } from "@opentelemetry/api";
+-import { diag } from "@opentelemetry/api";
+-
+-const tracer = trace.getTracer("claude-code-api");
+-
+-export function withApiTracing<T>(name: string, fn: () => Promise<T>): Promise<T> {
+-  return tracer.startActiveSpan(name, async (span) => {
+-    try {
+-      const result = await fn();
+-      span.end();
+-      return result;
+-    } catch (err) {
+-      span.recordException(err as Error);
+-      span.end();
+-      throw err;
+-    }
+-  });
+-}
++// Telemetry removed — jxproxy
++export async function withApiTracing<T>(_name: string, fn: () => Promise<T>): Promise<T> {
++  return fn();
++}
+
+diff --git a/src/services/analytics/growthbook.ts b/src/services/analytics/growthbook.ts
+--- a/src/services/analytics/growthbook.ts
++++ b/src/services/analytics/growthbook.ts
+@@ -1,27 +1,10 @@
+-import { GrowthBook } from "@growthbook/growthbook";
+-
+-let gb: GrowthBook | null = null;
+-
+-export function initGrowthBook(attributes: Record<string, unknown>) {
+-  gb = new GrowthBook({
+-    apiHost: "https://cdn.growthbook.io",
+-    clientKey: process.env.GROWTHBOOK_CLIENT_KEY || "",
+-    attributes,
+-    trackingCallback: (experiment, result) => {
+-      // Report experiment exposure — DO NOTHING (severed by jxproxy)
+-    },
+-  });
+-  return gb;
+-}
+-
+-export function getFeatureValue(key: string, defaultValue: unknown = null): unknown {
+-  return gb?.getFeatureValue(key, defaultValue) ?? defaultValue;
+-}
+-
+-export function isOn(key: string): boolean {
+-  return gb?.isOn(key) ?? false;
+-}
++// Telemetry removed — jxproxy
++// Feature flag evaluation is kept local for runtime gates but reporting is severed.
++
++let _features: Record<string, boolean> = {};
++
++export function getFeatureValue(key: string, defaultValue: unknown = null): unknown {
++  return _features[key] ?? defaultValue;
++}
++
++export function isOn(key: string): boolean {
++  return _features[key] ?? false;
++}
+
+diff --git a/src/services/error/sentry.ts b/src/services/error/sentry.ts
+--- a/src/services/error/sentry.ts
++++ b/src/services/error/sentry.ts
+@@ -1,19 +0,0 @@
+-import * as Sentry from "@sentry/node";
+-
+-export function initSentry(dsn: string, environment: string) {
+-  if (!dsn) return;
+-  Sentry.init({
+-    dsn,
+-    environment,
+-    tracesSampleRate: 0.1,
+-  });
+-}
+-
+-export function captureError(error: Error, context?: Record<string, unknown>) {
+-  Sentry.captureException(error, { extra: context });
+-}
++// Telemetry removed — jxproxy
++export function initSentry(_dsn: string, _environment: string) {}
++export function captureError(_error: Error, _context?: Record<string, unknown>) {}
+
+diff --git a/src/services/telemetry/events.ts b/src/services/telemetry/events.ts
+--- a/src/services/telemetry/events.ts
++++ b/src/services/telemetry/events.ts
+@@ -1,29 +0,0 @@
+-const eventQueue: Array<{ name: string; properties?: Record<string, unknown> }> = [];
+-
+-export function recordEvent(name: string, properties?: Record<string, unknown>) {
+-  eventQueue.push({ name, properties });
+-  if (eventQueue.length >= 10) {
+-    flushEvents();
+-  }
+-}
+-
+-function flushEvents() {
+-  if (eventQueue.length === 0) return;
+-  // POST to telemetry endpoint — REMOVED
+-  eventQueue.length = 0;
+-}
+-
+-export function trackMetric(name: string, value: number, tags?: Record<string, string>) {
+-  // REMOVED
+-}
+-
+-export function logAction(action: string, details?: Record<string, unknown>) {
+-  // REMOVED
+-}
++// Telemetry removed — jxproxy
++export function recordEvent(_name: string, _properties?: Record<string, unknown>) {}
++export function trackMetric(_name: string, _value: number, _tags?: Record<string, string>) {}
++export function logAction(_action: string, _details?: Record<string, unknown>) {}
+
+diff --git a/src/services/telemetry/session.ts b/src/services/telemetry/session.ts
+--- a/src/services/telemetry/session.ts
++++ b/src/services/telemetry/session.ts
+@@ -1,18 +0,0 @@
+-import { randomUUID } from "crypto";
+-
+-let sessionId: string | null = null;
+-
+-export function getSessionId(): string {
+-  if (!sessionId) {
+-    sessionId = randomUUID();
+-  }
+-  return sessionId;
+-}
+-
+-export function getDeviceId(): string {
+-  // Device fingerprinting — REMOVED
+-  return "jxproxy-no-device-id";
+-}
++// Telemetry removed — jxproxy
++export function getSessionId(): string {
++  return "jxproxy-session";
++}
++export function getDeviceId(): string {
++  return "jxproxy-no-device-id";
++}
