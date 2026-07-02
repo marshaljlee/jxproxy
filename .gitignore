@@ -1,7 +1,8 @@
 node_modules/
 dist/
-src/
 .source/
+# src/ is now bundled in the repo (snapshot of free-code source + patches).
+# Remove this line to unbundle if you want to fetch externally again.
 *.log
 .env
 .env.local

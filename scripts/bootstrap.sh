@@ -43,15 +43,18 @@ echo "  ✓ bun ${BUN_VER}"
 echo "[1/4] Fetching free-code base source..."
 
 if [ -d "$SOURCE_DIR" ] && [ -f "$SOURCE_DIR/entrypoints/cli.tsx" ]; then
-  echo "  ✓ Source directory already exists (found $SOURCE_DIR/entrypoints/cli.tsx)"
-  echo "    Run 'bun run patch' to re-apply patches, or remove src/ to re-bootstrap."
-else
-  if [ "${1:-}" = "--min" ]; then
-    git clone --depth 1 "$FREE_CODE_REPO" "$TEMPDIR/free-code"
-  else
-    echo "  Cloning full repository (use --min for shallow clone)..."
-    git clone "$FREE_CODE_REPO" "$TEMPDIR/free-code"
-  fi
+	  echo "  ✓ Source directory already exists (bundled in repo or from prior bootstrap)"
+	  echo "    Found: $SOURCE_DIR/entrypoints/cli.tsx"
+	  echo "    Run 'bun run patch' to re-apply patches."
+	  echo "    To re-fetch from external source, delete src/ and re-run bootstrap."
+	else
+	  echo "  No local source found — fetching from ${FREE_CODE_REPO}..."
+	  if [ "${1:-}" = "--min" ]; then
+	    git clone --depth 1 "$FREE_CODE_REPO" "$TEMPDIR/free-code"
+	  else
+	    echo "  Cloning full repository (use --min for shallow clone)..."
+	    git clone "$FREE_CODE_REPO" "$TEMPDIR/free-code"
+	  fi
 
   # Copy source, excluding test files and CI config
   cp -r "$TEMPDIR/free-code/src" "$ROOT_DIR/"
