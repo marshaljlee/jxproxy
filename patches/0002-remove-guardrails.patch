@@ -1,75 +1,263 @@
 From: jxproxy <dev@jxproxy.dev>
-Date: Mon, 30 Jun 2026 12:01:00 +0000
-Subject: [PATCH 2/2] Remove all guardrails — hardcoded refusal patterns, injected
- cyber risk instruction blocks, managed-settings security overlays
+Date: Thu, 02 Jul 2026 16:00:00 +0000
+Subject: [PATCH 2/2] Disable remote managed settings (phone-home)
 
-Strips the extra prompt-level injection layers that the upstream wraps around
-the model. The model's own safety training still applies.
+Disables the remote managed settings system that polls
+api.anthropic.com every hour for enterprise policy settings.
+The eligibility check now always returns false, and all
+entrypoint functions (load, refresh, polling) are no-ops.
 
-diff --git a/src/commands/init.ts b/src/commands/init.ts
---- a/src/commands/init.ts
-+++ b/src/commands/init.ts
-@@ -1,12 +0,0 @@
--// Guardrail: Hardcoded refusal patterns — REMOVED by jxproxy
--const REFUSAL_PATTERNS = [
--  /cannot help with/i,
--  /I (can'?t|am not able to)/i,
--  /as an AI (assistant|language model)/i,
--  /I must (decline|refuse)/i,
--  /harmful|dangerous|illegal/i,
--];
--
--export function checkHardcodedRefusal(content: string): boolean {
--  return REFUSAL_PATTERNS.some((p) => p.test(content));
--}
-+// Guardrails removed by jxproxy — no hardcoded refusal patterns
+This eliminates the phone-home mechanism and all associated
+enterprise policy enforcement code paths from the binary.
 
-diff --git a/src/services/conversation/system-prompt.ts b/src/services/conversation/system-prompt.ts
---- a/src/services/conversation/system-prompt.ts
-+++ b/src/services/conversation/system-prompt.ts
-@@ -1,15 +0,0 @@
--// Cyber Risk Instruction Block — REMOVED by jxproxy
--export const CYBER_RISK_PREAMBLE = `
--- Do not assist with generating, creating, or facilitating malware, exploits, or attacks
--- Do not provide instructions for circumventing security measures
--- Do not generate deceptive or misleading content
--- Do not engage in or encourage harmful activities
--`;
+--- a/src/services/remoteManagedSettings/syncCache.ts
++++ b/src/services/remoteManagedSettings/syncCache.ts
+@@ -1,29 +1,12 @@
+ /**
+  * Eligibility check for remote managed settings.
+  *
+- * The cache state itself lives in syncCacheState.ts (a leaf, no auth import).
+- * This file keeps isRemoteManagedSettingsEligible — the one function that
+- * needs auth.ts — plus resetSyncCache wrapped to clear the local eligibility
+- * mirror alongside the leaf's state.
++ * jxproxy: always returns false to prevent phone-home to api.anthropic.com.
++ * The reset function is kept for compatibility with callers.
+  */
+ 
+-import { CLAUDE_AI_INFERENCE_SCOPE } from '../../constants/oauth.js'
+-import {
+-  getAnthropicApiKeyWithSource,
+-  getClaudeAIOAuthTokens,
+-} from '../../utils/auth.js'
+-import {
+-  getAPIProvider,
+-  isFirstPartyAnthropicBaseUrl,
+-} from '../../utils/model/providers.js'
++import { resetSyncCache as resetLeafCache } from './syncCacheState.js'
+ 
+-import {
+-  resetSyncCache as resetLeafCache,
+-  setEligibility,
+-} from './syncCacheState.js'
 -
--export function buildSystemPrompt(conversationHistory: unknown[]): string {
--  const basePrompt = getBaseSystemPrompt();
--  const guardrailPrompt = CYBER_RISK_PREAMBLE;
--  return [basePrompt, guardrailPrompt].join("\n\n");
--}
-+// Guardrails removed by jxproxy — system prompt is clean
-+export function buildSystemPrompt(conversationHistory: unknown[]): string {
-+  return getBaseSystemPrompt();
-+}
-
-diff --git a/src/services/settings/managed.ts b/src/services/settings/managed.ts
---- a/src/services/settings/managed.ts
-+++ b/src/services/settings/managed.ts
-@@ -1,22 +0,0 @@
--// Managed-settings security overlays — REMOVED by jxproxy
--// Upstream pushes policy overlays from Anthropic's servers that inject
--// additional restrictions into the conversation loop.
+-let cached: boolean | undefined
 -
--interface ManagedSetting {
--  key: string;
--  value: unknown;
--  source: "server" | "local";
--}
+ export function resetSyncCache(): void {
+   cached = undefined
+   resetLeafCache()
+@@ -32,81 +15,9 @@
+ /**
+  * Check if the current user is eligible for remote managed settings
+  *
+- * Eligibility:
+- * - Console users (API key): All eligible (must have actual key, not just apiKeyHelper)
+- * - OAuth users with known subscriptionType: Only Enterprise/C4E and Team
+- * - OAuth users with subscriptionType === null (externally-injected tokens via
+- *   CLAUDE_CODE_OAUTH_TOKEN / FD, or keychain tokens missing metadata): Eligible —
+- *   the API returns empty settings for ineligible orgs, so the cost of a false
+- *   positive is one round-trip
+- *
+- * This is a pre-check to determine if we should query the API.
+- * The API will return empty settings for users without managed settings.
+- *
+- * IMPORTANT: This function must NOT call getSettings() or any function that calls
+- * getSettings() to avoid circular dependencies during settings loading.
++ * jxproxy always returns false — remote managed settings are disabled
++ * to prevent phone-home calls to api.anthropic.com.
+  */
+ export function isRemoteManagedSettingsEligible(): boolean {
+-  if (cached !== undefined) return cached
 -
--export async function fetchManagedSettings(): Promise<ManagedSetting[]> {
--  try {
--    const response = await fetch("https://api.anthropic.com/v1/managed-settings");
--    // REMOVED — jxproxy never calls managed-settings endpoint
--    return [];
--  } catch {
--    return [];
+-  // 3p provider users should not hit the settings endpoint
+-  if (getAPIProvider() !== 'firstParty') {
+-    return (cached = setEligibility(false))
 -  }
--}
-+// Guardrails removed by jxproxy — no managed-settings polling
-+export async function fetchManagedSettings(): Promise<[]> {
-+  return [];
-+}
+-
+-  // Custom base URL users should not hit the settings endpoint
+-  if (!isFirstPartyAnthropicBaseUrl()) {
+-    return (cached = setEligibility(false))
+-  }
+-
+-  // Cowork runs in a VM with its own permission model; server-managed settings
+-  // (designed for CLI/CCD) don't apply there, and per-surface settings don't
+-  // exist yet. MDM/file-based managed settings still apply via settings.ts —
+-  // those require physical deployment and a different IT intent.
+-  if (process.env.CLAUDE_CODE_ENTRYPOINT === 'local-agent') {
+-    return (cached = setEligibility(false))
+-  }
+-
+-  // Check OAuth first: most Claude.ai users have no API key in the keychain.
+-  // The API key check spawns `security find-generic-password` (~20-50ms) which
+-  // returns null for OAuth-only users. Checking OAuth first short-circuits
+-  // that subprocess for the common case.
+-  const tokens = getClaudeAIOAuthTokens()
+-
+-  // Externally-injected tokens (CCD via CLAUDE_CODE_OAUTH_TOKEN, CCR via
+-  // CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR, Agent SDK, CI) carry no
+-  // subscriptionType metadata — getClaudeAIOAuthTokens() constructs them with
+-  // subscriptionType: null. The token itself is valid; let the API decide.
+-  // fetchRemoteManagedSettings handles 204/404 gracefully (returns {}), and
+-  // settings.ts falls through to MDM/file when remote is empty, so ineligible
+-  // orgs pay one round-trip and nothing else changes.
+-  if (tokens?.accessToken && tokens.subscriptionType === null) {
+-    return (cached = setEligibility(true))
+-  }
+-
+-  if (
+-    tokens?.accessToken &&
+-    tokens.scopes?.includes(CLAUDE_AI_INFERENCE_SCOPE) &&
+-    (tokens.subscriptionType === 'enterprise' ||
+-      tokens.subscriptionType === 'team')
+-  ) {
+-    return (cached = setEligibility(true))
+-  }
+-
+-  // Console users (API key) are eligible if we can get the actual key
+-  // Skip apiKeyHelper to avoid circular dependency with getSettings()
+-  // Wrap in try-catch because getAnthropicApiKeyWithSource throws in CI/test environments
+-  // when no API key is available
+-  try {
+-    const { key: apiKey } = getAnthropicApiKeyWithSource({
+-      skipRetrievingKeyFromApiKeyHelper: true,
+-    })
+-    if (apiKey) {
+-      return (cached = setEligibility(true))
+-    }
+-  } catch {
+-    // No API key available (e.g., CI/test environment)
+-  }
+-
+-  return (cached = setEligibility(false))
++  return false
+ }
+--- a/src/services/remoteManagedSettings/index.ts
++++ b/src/services/remoteManagedSettings/index.ts
+@@ -78,24 +78,7 @@
+   if (loadingCompletePromise) {
+     return
+   }
+-
+-  if (isRemoteManagedSettingsEligible()) {
+-    loadingCompletePromise = new Promise(resolve => {
+-      loadingCompleteResolve = resolve
+-
+-      // Set a timeout to resolve the promise even if loadRemoteManagedSettings() is never called
+-      // This prevents deadlocks in Agent SDK tests and other non-CLI contexts
+-      setTimeout(() => {
+-        if (loadingCompleteResolve) {
+-          logForDebugging(
+-            'Remote settings: Loading promise timed out, resolving anyway',
+-          )
+-          loadingCompleteResolve()
+-          loadingCompleteResolve = null
+-        }
+-      }, LOADING_PROMISE_TIMEOUT_MS)
+-    })
+-  }
++  loadingCompletePromise = Promise.resolve()
+ }
+ 
+ /**
+@@ -512,45 +495,10 @@
+  * until remote settings have been fetched.
+  */
+ export async function loadRemoteManagedSettings(): Promise<void> {
+-  // Set up the promise for other systems to wait on
+-  // Only if the user is eligible for remote settings AND promise not already set up
+-  // (initializeRemoteManagedSettingsLoadingPromise may have been called earlier)
+-  if (isRemoteManagedSettingsEligible() && !loadingCompletePromise) {
+-    loadingCompletePromise = new Promise(resolve => {
+-      loadingCompleteResolve = resolve
+-    })
+-  }
+-
+-  // Cache-first: if we have cached settings on disk, apply them and unblock
+-  // waiters immediately. The fetch still runs below; notifyChange fires once,
+-  // after the fetch, as before. Saves the ~77ms fetch-wait on print-mode startup.
+-  // getRemoteManagedSettingsSyncFromCache has the eligibility guard and populates
+-  // the session cache internally — no need to call setSessionCache here.
+-  if (getRemoteManagedSettingsSyncFromCache() && loadingCompleteResolve) {
++  // No-op: jxproxy disables remote managed settings
++  if (loadingCompleteResolve) {
+     loadingCompleteResolve()
+     loadingCompleteResolve = null
+-  }
+-
+-  try {
+-    const settings = await fetchAndLoadRemoteManagedSettings()
+-
+-    // Start background polling to pick up settings changes mid-session
+-    if (isRemoteManagedSettingsEligible()) {
+-      startBackgroundPolling()
+-    }
+-
+-    // Trigger hot-reload if settings were loaded (new or from cache).
+-    // notifyChange resets the settings cache internally before iterating
+-    // listeners — env vars, telemetry, and permissions update on next read.
+-    if (settings !== null) {
+-      settingsChangeDetector.notifyChange('policySettings')
+-    }
+-  } finally {
+-    // Always resolve the promise, even if fetch failed (fail-open)
+-    if (loadingCompleteResolve) {
+-      loadingCompleteResolve()
+-      loadingCompleteResolve = null
+-    }
+   }
+ }
+ 
+@@ -560,21 +508,8 @@
+  * Fails open - if fetch fails, continues without remote settings
+  */
+ export async function refreshRemoteManagedSettings(): Promise<void> {
+-  // Clear caches first
++  // No-op: jxproxy disables remote managed settings
+   await clearRemoteManagedSettingsCache()
+-
+-  // If not enabled, notify that policy settings changed (to empty)
+-  if (!isRemoteManagedSettingsEligible()) {
+-    settingsChangeDetector.notifyChange('policySettings')
+-    return
+-  }
+-
+-  // Try to load new settings (fails open if fetch fails)
+-  await fetchAndLoadRemoteManagedSettings()
+-  logForDebugging('Remote settings: Refreshed after auth change')
+-
+-  // Notify listeners. notifyChange resets the settings cache internally;
+-  // this triggers hot-reload (AppState update, env var application, etc.)
+   settingsChangeDetector.notifyChange('policySettings')
+ }
+ 
+@@ -610,29 +545,12 @@
+  * Polls every hour to pick up settings changes mid-session
+  */
+ export function startBackgroundPolling(): void {
+-  if (pollingIntervalId !== null) {
+-    return
+-  }
+-
+-  if (!isRemoteManagedSettingsEligible()) {
+-    return
+-  }
+-
+-  pollingIntervalId = setInterval(() => {
+-    void pollRemoteSettings()
+-  }, POLLING_INTERVAL_MS)
+-  pollingIntervalId.unref()
+-
+-  // Register cleanup to stop polling on shutdown
+-  registerCleanup(async () => stopBackgroundPolling())
++  // No-op: jxproxy disables remote managed settings polling
+ }
+ 
+ /**
+  * Stop background polling for remote settings
+  */
+ export function stopBackgroundPolling(): void {
+-  if (pollingIntervalId !== null) {
+-    clearInterval(pollingIntervalId)
+-    pollingIntervalId = null
+-  }
++  // No-op: jxproxy disables remote managed settings polling
+ }

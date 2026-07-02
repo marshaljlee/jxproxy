@@ -168,7 +168,10 @@ step 2 5 "Cloning jxproxy repository"
 if [ -d "$CLONE_DIR" ]; then
   sub_info "Updating existing clone..."
   cd "$CLONE_DIR"
-  git pull --ff-only
+  # Fetch latest and hard-reset to handle any locally-modified tracked files
+  # (e.g. dist/ artifacts from a prior build that are tracked by git)
+  git fetch origin 2>&1 | tail -3
+  git reset --hard origin/main
 else
   if [ -n "$MIN_CLONE" ]; then
     git clone --depth 1 "$REPO" "$CLONE_DIR"
@@ -185,10 +188,13 @@ step_done
 #  STEP 3: Bootstrap
 # ─────────────────────────────────────────────────
 
-step 3 5 "Bootstrapping build environment"
+step 3 5 "Preparing build environment"
 
 if [ -d "src" ] && [ -f "src/entrypoints/cli.tsx" ]; then
-  sub_ok "Source already present"
+  sub_info "Source already present — re-applying patches and updating deps..."
+  cd "$CLONE_DIR"
+  bun install 2>/dev/null || true
+  bash scripts/patch-source.sh
 else
   bash scripts/bootstrap.sh ${MIN_CLONE:+"--min"}
 fi

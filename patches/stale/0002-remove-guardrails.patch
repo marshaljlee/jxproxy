@@ -1,0 +1,75 @@
+From: jxproxy <dev@jxproxy.dev>
+Date: Mon, 30 Jun 2026 12:01:00 +0000
+Subject: [PATCH 2/2] Remove all guardrails — hardcoded refusal patterns, injected
+ cyber risk instruction blocks, managed-settings security overlays
+
+Strips the extra prompt-level injection layers that the upstream wraps around
+the model. The model's own safety training still applies.
+
+diff --git a/src/commands/init.ts b/src/commands/init.ts
+--- a/src/commands/init.ts
++++ b/src/commands/init.ts
+@@ -1,12 +0,0 @@
+-// Guardrail: Hardcoded refusal patterns — REMOVED by jxproxy
+-const REFUSAL_PATTERNS = [
+-  /cannot help with/i,
+-  /I (can'?t|am not able to)/i,
+-  /as an AI (assistant|language model)/i,
+-  /I must (decline|refuse)/i,
+-  /harmful|dangerous|illegal/i,
+-];
+-
+-export function checkHardcodedRefusal(content: string): boolean {
+-  return REFUSAL_PATTERNS.some((p) => p.test(content));
+-}
++// Guardrails removed by jxproxy — no hardcoded refusal patterns
+
+diff --git a/src/services/conversation/system-prompt.ts b/src/services/conversation/system-prompt.ts
+--- a/src/services/conversation/system-prompt.ts
++++ b/src/services/conversation/system-prompt.ts
+@@ -1,15 +0,0 @@
+-// Cyber Risk Instruction Block — REMOVED by jxproxy
+-export const CYBER_RISK_PREAMBLE = `
+-- Do not assist with generating, creating, or facilitating malware, exploits, or attacks
+-- Do not provide instructions for circumventing security measures
+-- Do not generate deceptive or misleading content
+-- Do not engage in or encourage harmful activities
+-`;
+-
+-export function buildSystemPrompt(conversationHistory: unknown[]): string {
+-  const basePrompt = getBaseSystemPrompt();
+-  const guardrailPrompt = CYBER_RISK_PREAMBLE;
+-  return [basePrompt, guardrailPrompt].join("\n\n");
+-}
++// Guardrails removed by jxproxy — system prompt is clean
++export function buildSystemPrompt(conversationHistory: unknown[]): string {
++  return getBaseSystemPrompt();
++}
+
+diff --git a/src/services/settings/managed.ts b/src/services/settings/managed.ts
+--- a/src/services/settings/managed.ts
++++ b/src/services/settings/managed.ts
+@@ -1,22 +0,0 @@
+-// Managed-settings security overlays — REMOVED by jxproxy
+-// Upstream pushes policy overlays from Anthropic's servers that inject
+-// additional restrictions into the conversation loop.
+-
+-interface ManagedSetting {
+-  key: string;
+-  value: unknown;
+-  source: "server" | "local";
+-}
+-
+-export async function fetchManagedSettings(): Promise<ManagedSetting[]> {
+-  try {
+-    const response = await fetch("https://api.anthropic.com/v1/managed-settings");
+-    // REMOVED — jxproxy never calls managed-settings endpoint
+-    return [];
+-  } catch {
+-    return [];
+-  }
+-}
++// Guardrails removed by jxproxy — no managed-settings polling
++export async function fetchManagedSettings(): Promise<[]> {
++  return [];
++}
