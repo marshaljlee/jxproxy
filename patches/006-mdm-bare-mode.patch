@@ -1,0 +1,27 @@
+From: jxproxy <patch@jxproxy.dev>
+Date: Thu, 2 Jul 2026 22:00:00 -0700
+Subject: [PATCH 6/6] Skip MDM subprocess in --bare mode
+
+startMdmRawRead() fires plutil/reg query at module evaluation time, then
+the preAction hook awaits it. In --bare mode this is unnecessary (OAuth,
+keychain reads, and most prefetches are also skipped). Add the same
+isBareMode() guard that startKeychainPrefetch() already uses.
+
+--- a/src/utils/settings/mdm/rawRead.ts
++++ b/src/utils/settings/mdm/rawRead.ts
+@@ -115,9 +115,18 @@
+ /**
+  * Fire raw subprocess reads once for startup. Called at main.tsx module evaluation.
+  * Results are consumed via getMdmRawReadPromise().
++ *
++ * Skipped in bare mode (--bare / CLAUDE_CODE_SIMPLE) to avoid unnecessary
++ * subprocess spawning during startup — MDM settings are not needed when
++ * keychain reads, OAuth, and most prefetches are also skipped.
+  */
+ export function startMdmRawRead(): void {
+   if (rawReadPromise) return
++  // Skip in bare mode — MDM subprocess (plutil/reg query) is not needed
++  // when OAuth, keychain reads, and most prefetches are all skipped.
++  if (process.env.CLAUDE_CODE_SIMPLE || process.argv.includes('--bare')) return
+   rawReadPromise = fireRawRead()
+ }
