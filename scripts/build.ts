@@ -213,17 +213,11 @@ const cmd = [
   "--external", "@opentelemetry/sdk-trace-base",
   "--external", "@opentelemetry/sdk-trace-node",
   "--external", "@sentry/node",
-  "--external", "@growthbook/growthbook",
   // Missing files from broken feature flags (behind USER_TYPE === 'ant' guards)
   "--external", "./commands/agents-platform/index.js",
   "--external", "./tools/REPLTool/REPLTool.js",
-  "--external", "./tools/SuggestBackgroundPRTool/SuggestBackgroundPRTool.js",
-  // Missing internal @ant/* packages (Anthropic-internal, not in open-source forks)
-  "--external", "@ant/computer-use-mcp",
-  "--external", "@ant/claude-for-chrome-mcp",
-  "--external", "@ant/computer-use-swift",
-  "--external", "@ant/computer-use-input",
-  // Native addons
+	  "--external", "./tools/SuggestBackgroundPRTool/SuggestBackgroundPRTool.js",
+	  // Native addons
   "--external", "image-processor-napi",
   "--external", "keyring-napi",
   "--external", "microphone-napi",
