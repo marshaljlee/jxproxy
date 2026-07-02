@@ -34,6 +34,9 @@
 
 const DEFAULT_PORT = 5529;
 
+/** Timeout for upstream provider API calls (30 seconds). */
+const UPSTREAM_TIMEOUT_MS = 30_000;
+
 // --- Type Definitions ---
 
 interface MessagesRequest {
@@ -381,6 +384,7 @@ async function routeToAnthropicDirect(
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
   });
 
   // Pass through upstream errors so the fallback chain can detect them
@@ -411,6 +415,7 @@ async function routeToOpenAI(
       ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
     },
     body: JSON.stringify(openaiReq),
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
   });
 
   // Propagate upstream errors so the fallback chain can retry
@@ -544,6 +549,7 @@ async function routeToOpenRouter(
       "X-Title": "jxproxy",
     },
     body: JSON.stringify(toOpenAIChat(body)),
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
   });
 
   if (!response.ok && response.status >= 400) {
@@ -569,6 +575,7 @@ async function routeToLocal(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(openaiReq),
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
   });
 
   if (!response.ok && response.status >= 400) {
