@@ -1,5 +1,7 @@
 # jxproxy
 
+Another claude experiment. free-claude-code, free-code & Claude On Android
+
 > One binary. Zero callbacks home. Proxy-routed Claude Code for every platform.
 
 **jxproxy** is a self-contained downstream fork of Claude Code with:
