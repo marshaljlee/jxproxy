@@ -265,6 +265,15 @@ ENABLE_MODEL_THINKING=true
 # ANTHROPIC_API_KEY=sk-ant-...
 # OPENROUTER_API_KEY=sk-or-...
 # OPENAI_API_KEY=sk-...
+# OPENCODE_API_KEY=sk-oc-...
+
+# Provider fallback chain (optional):
+# Comma-separated list of providers to try if the primary fails.
+# Supports provider aliases: nvidia (→ openai), ollama (→ local)
+# FALLBACK_PROVIDERS=nvidia,local
+# OPENAI_BASE_URL=https://integrate.api.nvidia.com/v1
+# LOCAL_LLM_BASE_URL=http://127.0.0.1:11434/v1
+# LOCAL_LLM_MODEL=qwen3:latest
 CONFIGEOF
   sub_ok "Config created → ${CONFIG_FILE}"
 fi

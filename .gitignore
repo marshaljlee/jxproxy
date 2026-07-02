@@ -7,3 +7,4 @@ src/
 .env.local
 *.pid
 .DS_Store
+/server

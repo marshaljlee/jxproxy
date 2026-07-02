@@ -25,6 +25,10 @@
  *   ANTHROPIC_API_KEY     — API key for direct Anthropic routing
  *   OPENROUTER_API_KEY    — API key for OpenRouter routing
  *   OPENCODE_API_KEY      — API key for OpenCode Zen/Go
+ *   FALLBACK_PROVIDERS    — Comma-separated fallback list (nvidia→openai, ollama→local)
+ *   OPENAI_BASE_URL       — Custom base URL for openai / nvidia provider
+ *   LOCAL_LLM_BASE_URL    — Base URL for local / ollama provider
+ *   LOCAL_LLM_MODEL       — Default model for local / ollama provider
  *   MODEL, MODEL_OPUS, MODEL_SONNET, MODEL_HAIKU — Model routing
  */
 
@@ -81,6 +85,8 @@ interface ProxyConfig {
   openaiBaseUrl: string;
   localLlmBaseUrl: string;
   localLlmModel: string;
+  /** Ordered list of fallback provider names (e.g. "nvidia,local") */
+  fallbackProviders: string[];
 }
 
 function loadConfig(): ProxyConfig {
@@ -100,6 +106,7 @@ function loadConfig(): ProxyConfig {
     openaiBaseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
     localLlmBaseUrl: process.env.LOCAL_LLM_BASE_URL || "http://127.0.0.1:11434/v1",
     localLlmModel: process.env.LOCAL_LLM_MODEL || "qwen3:latest",
+    fallbackProviders: parseFallbackProviders(process.env.FALLBACK_PROVIDERS || ""),
   };
 }
 
@@ -152,6 +159,80 @@ function resolveApiKey(config: ProxyConfig): string {
     case "local":
       return ""; // No auth for local
   }
+}
+
+// --- Fallback Provider Aliases ---
+
+/**
+ * Parse a comma-separated FALLBACK_PROVIDERS string into an ordered list.
+ * Returns empty array if unset or blank.
+ */
+function parseFallbackProviders(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Resolve a friendly provider name to a canonical provider type.
+ * Known aliases:
+ *   "nvidia"  → "openai"  (uses OPENAI_BASE_URL / OPENAI_API_KEY)
+ *   "ollama"  → "local"   (uses LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL)
+ * Everything else is returned as-is.
+ */
+type ProviderName = ProxyConfig["provider"];
+function resolveProviderName(name: string): ProviderName {
+  switch (name.toLowerCase()) {
+    case "nvidia":
+      return "openai";
+    case "ollama":
+      return "local";
+    default:
+      return name as ProviderName;
+  }
+}
+
+/**
+ * Try an ordered list of provider+model pairs and return the first success.
+ * - Connection errors, timeouts, and 5xx are retryable → try next provider.
+ * - 4xx errors (auth, rate-limit) are NOT retryable → return immediately.
+ * - Returns the last error response if all providers fail.
+ */
+async function tryProviders(
+  handlers: Array<() => Promise<Response>>,
+): Promise<Response> {
+  let lastResponse: Response | null = null;
+
+  for (const handler of handlers) {
+    try {
+      const resp = await handler();
+      if (resp.status < 500) {
+        // Success (2xx) or client error (4xx) — return immediately
+        return resp;
+      }
+      // 5xx — retryable, try next provider
+      lastResponse = resp;
+    } catch (err) {
+      // Network errors, timeouts, DNS failures — retryable
+      lastResponse = new Response(
+        JSON.stringify({
+          type: "error",
+          error: {
+            type: "api_error",
+            message: `Provider unavailable: ${(err as Error).message || "unknown error"}`,
+          },
+        }),
+        { status: 502, headers: { "Content-Type": "application/json" } },
+      );
+    }
+  }
+
+  // All providers failed — return the last error
+  return lastResponse || new Response(
+    JSON.stringify({ type: "error", error: { type: "api_error", message: "No providers available" } }),
+    { status: 503, headers: { "Content-Type": "application/json" } },
+  );
 }
 
 // --- Protocol Conversion ---
@@ -302,6 +383,7 @@ async function routeToAnthropicDirect(
     body: JSON.stringify(body),
   });
 
+  // Pass through upstream errors so the fallback chain can detect them
   return new Response(response.body, {
     status: response.status,
     headers: {
@@ -330,6 +412,15 @@ async function routeToOpenAI(
     },
     body: JSON.stringify(openaiReq),
   });
+
+  // Propagate upstream errors so the fallback chain can retry
+  if (!response.ok && response.status >= 400) {
+    // 5xx is retryable; 4xx is not — return as-is for tryProviders to decide
+    return new Response(await response.text(), {
+      status: response.status,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
 
   if (req.stream !== false) {
     // Convert OpenAI SSE stream to Anthropic SSE
@@ -455,6 +546,13 @@ async function routeToOpenRouter(
     body: JSON.stringify(toOpenAIChat(body)),
   });
 
+  if (!response.ok && response.status >= 400) {
+    return new Response(await response.text(), {
+      status: response.status,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
   return await openAIToAnthropicStream(response, req);
 }
 
@@ -472,6 +570,13 @@ async function routeToLocal(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(openaiReq),
   });
+
+  if (!response.ok && response.status >= 400) {
+    return new Response(await response.text(), {
+      status: response.status,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
 
   return await openAIToAnthropicStream(response, req);
 }
@@ -633,7 +738,15 @@ function createServer(config: ProxyConfig) {
   configMap.set("openai", (req) => routeToOpenAI(req, config));
   configMap.set("local", (req) => routeToLocal(req, config));
 
-  const routeHandler = configMap.get(config.provider) || configMap.get("direct")!;
+  // Build the ordered provider chain: [primary, ...fallbacks]
+  const primaryProvider = resolveProviderName(config.provider);
+  const primaryHandler = configMap.get(primaryProvider) || configMap.get("direct")!;
+
+  const fallbackHandlers = config.fallbackProviders
+    .map((name) => configMap.get(resolveProviderName(name)))
+    .filter((h): h is (req: MessagesRequest) => Promise<Response> => h != null);
+
+  const providerChain = [primaryProvider, ...config.fallbackProviders.map(resolveProviderName)];
 
   return {
     config,
@@ -660,7 +773,15 @@ function createServer(config: ProxyConfig) {
           );
         }
 
-        return routeHandler(body);
+        // Build the ordered chain of handler calls
+        const handlers: Array<() => Promise<Response>> = [
+          // Primary provider
+          () => primaryHandler(body),
+          // Fallback providers
+          ...fallbackHandlers.map((handler) => () => handler(body)),
+        ];
+
+        return tryProviders(handlers);
       },
 
       async countTokens(req: Request): Promise<Response> {
@@ -685,8 +806,18 @@ function createServer(config: ProxyConfig) {
       },
 
       async health(_req: Request): Promise<Response> {
+        const chain = [
+          config.provider,
+          ...(config.fallbackProviders.length > 0 ? config.fallbackProviders : []),
+        ];
         return new Response(
-          JSON.stringify({ status: "ok", provider: config.provider, version: "0.1.0" }),
+          JSON.stringify({
+            status: "ok",
+            provider: config.provider,
+            fallbackProviders: config.fallbackProviders,
+            providerChain: chain,
+            version: "0.1.0",
+          }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         );
       },
@@ -712,6 +843,9 @@ if (import.meta.main) {
   console.error(`  ${"=".repeat(40)}`);
   console.error(`  Port:     ${port}`);
   console.error(`  Provider: ${config.provider}`);
+  if (config.fallbackProviders.length > 0) {
+    console.error(`  Fallback: ${config.fallbackProviders.join(", ")}`);
+  }
   console.error(`  Model:    ${config.model}`);
   console.error(`  ${"=".repeat(40)}\n`);
 
