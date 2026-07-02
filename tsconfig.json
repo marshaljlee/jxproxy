@@ -12,7 +12,8 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "allowImportingTsExtensions": true,
-    "noEmit": true,
+	    "baseUrl": ".",
+	    "noEmit": true,
     "types": ["bun-types"]
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "proxy/**/*.ts", "scripts/**/*.ts"],
