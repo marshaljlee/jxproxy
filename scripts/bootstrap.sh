@@ -26,6 +26,18 @@ trap cleanup EXIT
 echo "=== jxproxy Bootstrap ==="
 echo ""
 
+# --- Pre-flight: Check Bun version ---
+
+MIN_BUN="1.3.11"
+BUN_VER=$(bun --version 2>/dev/null || echo "0")
+if [ "$(printf '%s\n' "$MIN_BUN" "$BUN_VER" | sort -V | head -n1)" != "$MIN_BUN" ]; then
+  echo "  ✗ Bun ${BUN_VER} is too old. jxproxy requires Bun ${MIN_BUN}+."
+  echo "  Upgrade with: curl -fsSL https://bun.sh/install | bash"
+  exit 1
+fi
+
+echo "  ✓ bun ${BUN_VER}"
+
 # --- Phase 1: Fetch free-code base source ---
 
 echo "[1/4] Fetching free-code base source..."
@@ -64,22 +76,7 @@ echo "  ✓ Dependencies installed"
 # --- Phase 3: Apply jxproxy patches ---
 
 echo "[3/4] Applying jxproxy patches..."
-
-PATCH_DIR="$ROOT_DIR/patches"
-if [ -d "$PATCH_DIR" ]; then
-  for patch in "$PATCH_DIR"/*.patch; do
-    if [ -f "$patch" ]; then
-      echo "  Applying $(basename "$patch")..."
-      (cd "$SOURCE_DIR" && git apply "$patch" 2>/dev/null) || {
-        echo "  ⚠ Note: Some patches may already be applied (the free-code source is already modified)"
-        echo "    Manual review needed for: $(basename "$patch")"
-      }
-    fi
-  done
-else
-  echo "  ⚠ No patches directory found at $PATCH_DIR — skipping"
-fi
-
+bash "$ROOT_DIR/scripts/patch-source.sh"
 echo ""
 
 # --- Phase 4: Verify build readiness ---
@@ -98,12 +95,7 @@ if ! command -v bun &>/dev/null; then
   ERRORS=$((ERRORS + 1))
 fi
 
-BUN_VER=$(bun --version 2>/dev/null || echo "0")
-if [ "$(printf '%s\n' "1.3.11" "$BUN_VER" | sort -V | head -n1)" != "1.3.11" ]; then
-  echo "  ⚠ bun $BUN_VER — 1.3.11+ recommended"
-fi
-
-if [ $ERRORS -eq 0 ]; then
+	if [ $ERRORS -eq 0 ]; then
   echo "  ✓ Ready to build! Run 'bun run build' to compile."
 else
   echo "  ✗ $ERRORS error(s) — fix before building"

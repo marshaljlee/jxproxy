@@ -20,6 +20,25 @@ import { existsSync, mkdirSync, copyFileSync } from "fs";
 import { resolve } from "path";
 import { argv, exit, version } from "process";
 
+// --- Minimum Bun Version Check ---
+
+const MIN_BUN_VERSION = "1.3.11";
+const bunVersion = version;
+const bunParts = bunVersion.split(".").map(Number);
+const minParts = MIN_BUN_VERSION.split(".").map(Number);
+
+// Simple semver comparison (major.minor.patch only)
+const bunOk =
+  bunParts[0] > minParts[0] ||
+  (bunParts[0] === minParts[0] && bunParts[1] > minParts[1]) ||
+  (bunParts[0] === minParts[0] && bunParts[1] === minParts[1] && bunParts[2] >= minParts[2]);
+
+if (!bunOk) {
+  console.error(`\n  ✗ Bun ${bunVersion} is too old. jxproxy requires Bun ${MIN_BUN_VERSION}+.`);
+  console.error(`  Upgrade with: curl -fsSL https://bun.sh/install | bash\n`);
+  exit(1);
+}
+
 // --- Feature Flags ---
 
 const DEFAULT_FEATURES = ["VOICE_MODE"];

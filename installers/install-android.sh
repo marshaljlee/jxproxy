@@ -155,9 +155,9 @@ if [ -n "$FROM_DIST" ]; then
 
   if [ -f "$CLI_SRC" ] && [ -x "$CLI_SRC" ]; then
     LD_PRELOAD='' "$PATCHELF" --set-interpreter "$GLIBC_LD" "$CLI_SRC" 2>/dev/null || true
-    cp "$CLI_SRC" "$BIN_DIR/jxproxy"
-    chmod 755 "$BIN_DIR/jxproxy"
-    ok "CLI binary copied: $BIN_DIR/jxproxy"
+    cp "$CLI_SRC" "$BIN_DIR/jxproxy-cli"
+    chmod 755 "$BIN_DIR/jxproxy-cli"
+    ok "CLI binary copied: $BIN_DIR/jxproxy-cli"
     CLI_DOWNLOADED=true
   else
     warn "CLI binary not found at $CLI_SRC"
@@ -205,7 +205,7 @@ else
   CLI_DOWNLOADED=false
   PROXY_DOWNLOADED=false
 
-  download_and_patch "jxproxy" "jxproxy-${BINARY_SUFFIX}" && CLI_DOWNLOADED=true
+  download_and_patch "jxproxy-cli" "jxproxy-${BINARY_SUFFIX}" && CLI_DOWNLOADED=true
   download_and_patch "jxproxy-proxy" "jxproxy-proxy-${BINARY_SUFFIX}" && PROXY_DOWNLOADED=true
 fi
 
@@ -216,54 +216,20 @@ echo ""
 echo "[3/5] Installing launcher..."
 
 LAUNCHER="$BIN_DIR/jxproxy"
-cat > "$LAUNCHER" << 'LAUNCHER_EOF'
-#!/data/data/com.termux/files/usr/bin/bash
-#
-# jxproxy launcher for Termux
-#
-set -euo pipefail
 
-BIN_DIR="$(dirname "$0")"
-DATA_DIR="${HOME}/.jxproxy"
-CONFIG_FILE="$DATA_DIR/config.env"
-PID_FILE="$DATA_DIR/proxy.pid"
-LOG_FILE="$DATA_DIR/proxy.log"
-
-if [ -f "$CONFIG_FILE" ]; then
-  set -a; source "$CONFIG_FILE"; set +a
-fi
-
-JXPROXY_PORT="${JXPROXY_PORT:-5529}"
-JXPROXY_AUTH_TOKEN="${JXPROXY_AUTH_TOKEN:-jxproxy}"
-ANTHROPIC_AUTH_TOKEN="$JXPROXY_AUTH_TOKEN"
-export ANTHROPIC_AUTH_TOKEN
-
-mkdir -p "$DATA_DIR"
-
-# Start proxy
-if [ -x "$BIN_DIR/jxproxy-proxy" ]; then
-  nohup "$BIN_DIR/jxproxy-proxy" > "$LOG_FILE" 2>&1 &
-  echo $! > "$PID_FILE"
-  for i in $(seq 1 15); do
-    if curl -sf "http://127.0.0.1:$JXPROXY_PORT/health" >/dev/null 2>&1; then
-      break
-    fi
-    sleep 0.5
-  done
-fi
-
-export ANTHROPIC_BASE_URL="http://127.0.0.1:$JXPROXY_PORT"
-
-if [ -x "$BIN_DIR/jxproxy" ]; then
-  exec "$BIN_DIR/jxproxy" "$@"
+# Try local file first, then download from repo
+LAUNCHER_URL="https://raw.githubusercontent.com/marshaljlee/jxproxy/main/installers/android-launcher.sh"
+if [ -f "$(dirname "$0")/android-launcher.sh" ]; then
+  cp "$(dirname "$0")/android-launcher.sh" "$LAUNCHER"
+  chmod 755 "$LAUNCHER"
+  ok "Launcher installed: $LAUNCHER"
+elif curl -fsSL -o "$LAUNCHER" "$LAUNCHER_URL"; then
+  chmod 755 "$LAUNCHER"
+  ok "Launcher downloaded and installed: $LAUNCHER"
 else
-  err "jxproxy binary not found at $BIN_DIR/jxproxy"
-  exit 1
+  warn "Could not install launcher — run jxproxy-cli directly"
+  warn "  jxproxy-cli -- --help"
 fi
-LAUNCHER_EOF
-
-chmod 755 "$LAUNCHER"
-ok "Launcher: $LAUNCHER"
 
 echo ""
 
@@ -303,16 +269,16 @@ echo ""
 echo "[5/5] Verification..."
 
 if $CLI_DOWNLOADED; then
-  if "$BIN_DIR/jxproxy" --version 2>/dev/null || "$BIN_DIR/jxproxy" --help >/dev/null 2>&1; then
-    ok "CLI binary smoke test passed"
-  else
-    warn "CLI binary smoke test skipped (may need proot or glibc environment)"
-    warn "  Binary is at: $BIN_DIR/jxproxy"
-    warn "  Run it within proot-distro if native execution fails:"
-    warn "    proot-distro login ubuntu"
-    warn "    apt install curl # then run jxproxy there"
-  fi
-fi
+	  if "$BIN_DIR/jxproxy-cli" --version 2>/dev/null || "$BIN_DIR/jxproxy-cli" --help >/dev/null 2>&1; then
+	    ok "CLI binary smoke test passed"
+	  else
+	    warn "CLI binary smoke test skipped (may need proot or glibc environment)"
+	    warn "  Binary is at: $BIN_DIR/jxproxy-cli"
+	    warn "  Run via the jxproxy launcher, or within proot-distro if native execution fails:"
+	    warn "    proot-distro login ubuntu"
+	    warn "    apt install curl # then run jxproxy there"
+	  fi
+	fi
 
 if $PROXY_DOWNLOADED; then
   chmod 755 "$BIN_DIR/jxproxy-proxy"

@@ -83,25 +83,47 @@ echo ""
 echo "[1/5] Checking dependencies..."
 
 if ! command -v git &>/dev/null; then
-  echo "  Installing git..."
-  if [ "$PLATFORM" = "macos" ]; then
-    xcode-select --install 2>/dev/null || true
-  else
-    echo "  Please install git: apt-get install git (Debian) or yum install git (RHEL)"
-    exit 1
-  fi
-fi
-
-if ! command -v bun &>/dev/null; then
-  echo "  Installing Bun runtime..."
-  curl -fsSL https://bun.sh/install | bash
-  export BUN_INSTALL="${HOME}/.bun"
-  export PATH="${BUN_INSTALL}/bin:${PATH}"
-fi
-
-BUN_VER=$(bun --version 2>/dev/null || echo "0")
-echo "  ✓ bun ${BUN_VER}"
-echo "  ✓ git"
+	if [ "$PLATFORM" = "macos" ]; then
+	    echo "  Installing git (Xcode Command Line Tools)..."
+	    xcode-select --install 2>/dev/null || true
+	    # Xcode CLI tools install is asynchronous — poll until git is available
+	    echo "  Waiting for Xcode CLI tools installation to complete..."
+	    for i in $(seq 1 60); do
+	      if command -v git &>/dev/null; then
+	        break
+	      fi
+	      sleep 2
+	    done
+	    if ! command -v git &>/dev/null; then
+	      echo "  Xcode CLI tools install did not complete in 2 minutes."
+	      echo "  Try running manually: xcode-select --install"
+	      echo "  Or install git from https://git-scm.com/download/mac"
+	      exit 1
+	    fi
+	  else
+	    echo "  Please install git: apt-get install git (Debian) or yum install git (RHEL)"
+	    exit 1
+	  fi
+	fi
+	
+	if ! command -v bun &>/dev/null; then
+	  echo "  Installing Bun runtime..."
+	  curl -fsSL https://bun.sh/install | bash
+	  export BUN_INSTALL="${HOME}/.bun"
+	  export PATH="${BUN_INSTALL}/bin:${PATH}"
+	fi
+	
+	BUN_VER=$(bun --version 2>/dev/null || echo "0")
+	
+	# Enforce minimum Bun version (1.3.11+)
+	if [ "$(printf '%s\n' "1.3.11" "$BUN_VER" | sort -V | head -n1)" != "1.3.11" ]; then
+	  echo "  Bun ${BUN_VER} is too old. jxproxy requires Bun 1.3.11+."
+	  echo "  Upgrade with: curl -fsSL https://bun.sh/install | bash"
+	  exit 1
+	fi
+	
+	echo "  ✓ bun ${BUN_VER}"
+	echo "  ✓ git"
 echo ""
 
 # --- Clone Repository ---
@@ -143,37 +165,38 @@ echo "[4/5] Building jxproxy..."
 mkdir -p "$BIN_DIR" "$DATA_DIR"
 
 if [ -z "$NO_BUILD" ]; then
-  bun run build 2>&1 | tail -5
-  echo "  ✓ CLI binary built"
+    bun run build 2>&1 | tail -5
+    echo "  ✓ CLI binary built"
 
-  bun run build:proxy 2>&1 | tail -5 || {
-    echo "  ⚠ Proxy binary build skipped (optional)"
-  }
-else
-  echo "  Skipping build (--no-build flag)"
-fi
+    # Build proxy with host-native target (Bun.serve has no arch-specific deps)
+    bun build ./proxy/server.ts --compile --target=bun --minify --bytecode --outfile ./dist/jxproxy-proxy 2>&1 | tail -5 || {
+      echo "  ⚠ Proxy binary build skipped (non-fatal)"
+    }
+  else
+    echo "  Skipping build (--no-build flag)"
+  fi
 
-# --- Install ---
+  # --- Install ---
 
-echo "[5/5] Installing..."
+  echo "[5/5] Installing..."
 
-# Copy binaries
-if [ -f "dist/jxproxy" ]; then
-  cp "dist/jxproxy" "$BIN_DIR/jxproxy"
+  # Copy CLI binary as jxproxy-cli (launcher script uses the name jxproxy — no collision)
+  if [ -f "dist/jxproxy" ]; then
+    cp "dist/jxproxy" "$BIN_DIR/jxproxy-cli"
+    chmod 755 "$BIN_DIR/jxproxy-cli"
+    echo "  ✓ Installed: $BIN_DIR/jxproxy-cli"
+  fi
+
+  if [ -f "dist/jxproxy-proxy" ]; then
+    cp "dist/jxproxy-proxy" "$BIN_DIR/jxproxy-proxy"
+    chmod 755 "$BIN_DIR/jxproxy-proxy"
+    echo "  ✓ Installed: $BIN_DIR/jxproxy-proxy"
+  fi
+
+  # Install launcher (user-facing entry point — jxproxy)
+  cp "scripts/jxproxy-launcher.sh" "$BIN_DIR/jxproxy"
   chmod 755 "$BIN_DIR/jxproxy"
-  echo "  ✓ Installed: $BIN_DIR/jxproxy"
-fi
-
-if [ -f "dist/jxproxy-proxy" ]; then
-  cp "dist/jxproxy-proxy" "$BIN_DIR/jxproxy-proxy"
-  chmod 755 "$BIN_DIR/jxproxy-proxy"
-  echo "  ✓ Installed: $BIN_DIR/jxproxy-proxy"
-fi
-
-# Install launcher
-cp "scripts/jxproxy-launcher.sh" "$BIN_DIR/jxproxy"
-chmod 755 "$BIN_DIR/jxproxy"
-echo "  ✓ Launcher: $BIN_DIR/jxproxy"
+  echo "  ✓ Launcher: $BIN_DIR/jxproxy"
 
 # Create default config
 CONFIG_FILE="$DATA_DIR/config.env"

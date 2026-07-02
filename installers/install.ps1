@@ -142,10 +142,10 @@ New-Item -ItemType Directory -Force -Path $BinDir, $DataDir | Out-Null
 if (-not $NoBuild) {
     Write-Host "  Building CLI (this may take a few minutes)..."
     bun run build --target=$target 2>&1 | Select-Object -Last 5
-    Write-Host "  ✓ CLI binary built"
+	Write-Host "  ✓ CLI binary built (dist\jxproxy.exe)"
 
-    Write-Host "  Building proxy..."
-    bun build ./proxy/server.ts --compile --target=$target --outfile ./dist/jxproxy-proxy 2>&1 | Select-Object -Last 5
+	    Write-Host "  Building proxy..."
+	    bun build ./proxy/server.ts --compile --target=bun --outfile ./dist/jxproxy-proxy.exe 2>&1 | Select-Object -Last 5
 }
 else {
     Write-Host "  Skipping build (--no-build flag)"
@@ -155,7 +155,7 @@ Write-Host ""
 # --- Install ---
 Write-Host "[5/5] Installing..."
 
-Copy-Item -Path "dist\jxproxy.exe" -Destination "$BinDir\jxproxy.exe" -ErrorAction SilentlyContinue
+Copy-Item -Path "dist\jxproxy.exe" -Destination "$BinDir\jxproxy-cli.exe" -ErrorAction SilentlyContinue
 Copy-Item -Path "dist\jxproxy-proxy.exe" -Destination "$BinDir\jxproxy-proxy.exe" -ErrorAction SilentlyContinue
 
 # Install launcher script
@@ -187,9 +187,9 @@ curl -sf http://127.0.0.1:%JXPROXY_PORT%/health >nul 2>&1
 if errorlevel 1 goto waitloop
 
 REM Launch CLI through proxy
-set "ANTHROPIC_BASE_URL=http://127.0.0.1:%JXPROXY_PORT%"
-set "ANTHROPIC_AUTH_TOKEN=jxproxy"
-"%BIN_DIR%\jxproxy.exe" %*
+	set "ANTHROPIC_BASE_URL=http://127.0.0.1:%JXPROXY_PORT%"
+	set "ANTHROPIC_AUTH_TOKEN=jxproxy"
+	"%BIN_DIR%\jxproxy-cli.exe" %*
 '@
 
 $launcherBat = "$BinDir\jxproxy.bat"

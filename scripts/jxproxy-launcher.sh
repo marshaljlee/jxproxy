@@ -32,8 +32,9 @@ JXPROXY_CONFIG_FILE="$JXPROXY_DATA_DIR/config.env"
 
 # Auto-detect binary paths relative to this script
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-if [ -f "$SCRIPT_DIR/jxproxy" ]; then
-  JXPROXY_CLI_BINARY="${JXPROXY_CLI_BINARY:-$SCRIPT_DIR/jxproxy}"
+# Look for jxproxy-cli first (new name), fall back to dist/jxproxy (old name, build output)
+if [ -f "$SCRIPT_DIR/jxproxy-cli" ]; then
+  JXPROXY_CLI_BINARY="${JXPROXY_CLI_BINARY:-$SCRIPT_DIR/jxproxy-cli}"
 elif [ -f "$SCRIPT_DIR/../dist/jxproxy" ]; then
   JXPROXY_CLI_BINARY="${JXPROXY_CLI_BINARY:-$(cd "$SCRIPT_DIR/.." && pwd)/dist/jxproxy}"
 else
@@ -93,16 +94,65 @@ fi
 
 mkdir -p "$JXPROXY_DATA_DIR"
 
-# --- Load config file ---
+# --- Safe config loading ---
+# Reads key=value pairs from config file, skipping comments and blank lines.
+# Does NOT source the file — safe from malformed lines that would crash with set -e.
 
-if [ -f "$JXPROXY_CONFIG_FILE" ]; then
-  set -a
-  source "$JXPROXY_CONFIG_FILE"
-  set +a
-  info "Loaded config from $JXPROXY_CONFIG_FILE"
-fi
+load_config() {
+  if [ -f "$JXPROXY_CONFIG_FILE" ]; then
+    while IFS='=' read -r key value; do
+      # Skip comments and blank lines
+      [[ "$key" =~ ^[[:space:]]*# ]] && continue
+      [[ -z "${key// /}" ]] && continue
+      key="$(echo "$key" | tr -d ' ')"
+      value="$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      if [ -n "$key" ]; then
+        export "$key=$value"
+      fi
+    done < "$JXPROXY_CONFIG_FILE"
+    info "Loaded config from $JXPROXY_CONFIG_FILE"
+  fi
+}
+
+load_config
 
 # --- Functions ---
+
+# Ensure the proxy binary is available, building it if necessary
+ensure_proxy_binary() {
+  if [ -n "$JXPROXY_PROXY_BINARY" ] && [ -x "$JXPROXY_PROXY_BINARY" ]; then
+    return 0
+  fi
+
+  # Try known locations
+  if [ -x "$SCRIPT_DIR/jxproxy-proxy" ]; then
+    JXPROXY_PROXY_BINARY="$SCRIPT_DIR/jxproxy-proxy"
+    return 0
+  fi
+
+  local dist_proxy="$SCRIPT_DIR/../dist/jxproxy-proxy"
+  if [ -x "$dist_proxy" ]; then
+    JXPROXY_PROXY_BINARY="$dist_proxy"
+    return 0
+  fi
+
+  # Try to build from source
+  if [ -f "$SCRIPT_DIR/../proxy/server.ts" ] && command -v bun &>/dev/null; then
+    info "Proxy binary not found, building from source..."
+    (cd "$SCRIPT_DIR/.." && bun build ./proxy/server.ts --compile --target=bun --minify --bytecode --outfile ./dist/jxproxy-proxy) || {
+      err "Failed to build proxy binary."
+      return 1
+    }
+    if [ -x "$dist_proxy" ]; then
+      JXPROXY_PROXY_BINARY="$dist_proxy"
+      return 0
+    fi
+  fi
+
+  err "Proxy binary not found and could not be built."
+  err "Run 'bun run build:proxy' from the jxproxy source directory."
+  return 1
+}
 
 start_proxy() {
   local binary="$1"
@@ -203,31 +253,8 @@ proxy_status() {
 
 case "${1:-}" in
   --proxy-only)
-    # Build proxy from source if binary doesn't exist
-    if [ -z "$JXPROXY_PROXY_BINARY" ]; then
-      JXPROXY_PROXY_BINARY="$SCRIPT_DIR/../dist/jxproxy-proxy"
-      if [ ! -f "$JXPROXY_PROXY_BINARY" ]; then
-        info "Proxy binary not found, building from source..."
-        (cd "$SCRIPT_DIR/.." && bun run build:proxy) || {
-          err "Failed to build proxy; falling back to 'bun run proxy/server.ts'"
-          JXPROXY_PROXY_BINARY=""
-        }
-      fi
-    fi
-
-    if [ -n "$JXPROXY_PROXY_BINARY" ]; then
-      start_proxy "$JXPROXY_PROXY_BINARY"
-    else
-      # Fall back to running via bun directly
-      if command -v bun &>/dev/null; then
-        info "Starting proxy via bun..."
-        JXPROXY_PORT="$JXPROXY_PORT" JXPROXY_PROVIDER="$JXPROXY_PROVIDER" \
-          bun run "$SCRIPT_DIR/../proxy/server.ts"
-      else
-        err "No proxy binary and no bun runtime available"
-        exit 1
-      fi
-    fi
+    ensure_proxy_binary || exit 1
+    start_proxy "$JXPROXY_PROXY_BINARY"
     exit $?
     ;;
 
@@ -254,9 +281,10 @@ esac
 
 # --- Default: Start proxy + CLI ---
 
-# 1. Start the proxy if not already running
+# 1. Ensure proxy binary exists, then start if not already running
+ensure_proxy_binary || exit 1
 if ! proxy_status > /dev/null 2>&1; then
-  start_proxy "${JXPROXY_PROXY_BINARY:-}" || {
+  start_proxy "$JXPROXY_PROXY_BINARY" || {
     err "Could not start proxy. Check $JXPROXY_LOG_FILE"
     exit 1
   }
