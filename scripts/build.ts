@@ -23,7 +23,9 @@ import { argv, exit, version } from "process";
 // --- Minimum Bun Version Check ---
 
 const MIN_BUN_VERSION = "1.3.11";
-const bunVersion = version;
+// process.version can return "v1.3.14" (with v prefix) — strip it
+const rawVersion = version.startsWith("v") ? version.slice(1) : version;
+const bunVersion = rawVersion;
 const bunParts = bunVersion.split(".").map(Number);
 const minParts = MIN_BUN_VERSION.split(".").map(Number);
 
@@ -34,8 +36,8 @@ const bunOk =
   (bunParts[0] === minParts[0] && bunParts[1] === minParts[1] && bunParts[2] >= minParts[2]);
 
 if (!bunOk) {
-  console.error(`\n  ✗ Bun ${bunVersion} is too old. jxproxy requires Bun ${MIN_BUN_VERSION}+.`);
-  console.error(`  Upgrade with: curl -fsSL https://bun.sh/install | bash\n`);
+  console.error(`\n  ┃ ✗ Bun ${bunVersion} is too old. jxproxy requires Bun ${MIN_BUN_VERSION}+.`);
+  console.error(`  ┃   Upgrade with: curl -fsSL https://bun.sh/install | bash\n`);
   exit(1);
 }
 
@@ -179,13 +181,14 @@ const versionInfo = readVersionInfo();
 
 // --- Compile ---
 
-console.log(`\n  jxproxy build`);
-console.log(`  ${"=".repeat(60)}`);
-console.log(`  Features: ${features.length} enabled`);
-console.log(`  Dev mode: ${isDev ? "yes" : "no"}`);
-console.log(`  Target:   ${outputTarget}`);
-console.log(`  Output:   ${OUT_FILE}`);
-console.log(`  ${"=".repeat(60)}\n`);
+	console.log(`\n  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓`);
+	console.log(`  ┃              jxproxy Build System                     ┃`);
+	console.log(`  ┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩`);
+	console.log(`  │ Features: ${String(features.length).padStart(3)} enabled                                   │`);
+	console.log(`  │ Dev mode: ${isDev ? "yes" : "no ".toString().padEnd(3)}                                     │`);
+	console.log(`  │ Target:   ${outputTarget.padEnd(36)}│`);
+	console.log(`  │ Output:   ${OUT_FILE.padEnd(36)}│`);
+	console.log(`  └────────────────────────────────────────────────────────┘\n`);
 
 const cmd = [
   "bun",

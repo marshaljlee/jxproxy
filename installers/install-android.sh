@@ -91,6 +91,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+BOLD='\033[1m'
 NC='\033[0m'
 
 info()  { echo -e "${CYAN}jxproxy${NC} $1"; }
@@ -99,17 +100,42 @@ warn()  { echo -e "${YELLOW}⚠${NC} $1"; }
 err()   { echo -e "${RED}✗${NC} $1" >&2; }
 
 echo ""
-echo "  jxproxy — Android / Termux Installer"
-echo "  ====================================="
+echo -e "  ${BOLD}╔══════════════════════════════════════════════════════════╗${NC}"
+echo -e "  ${BOLD}║${NC}               ${CYAN}jxproxy Android Installer${NC}               ${BOLD}║${NC}"
+echo -e "  ${BOLD}║${NC}                                                          ${BOLD}║${NC}"
+echo -e "  ${BOLD}║${NC}  ${BOLD}Platform:${NC}  Android / Termux (${ARCH_LABEL})                ${BOLD}║${NC}"
+echo -e "  ${BOLD}║${NC}  ${BOLD}Bin dir:${NC}   ${BIN_DIR}            ${BOLD}║${NC}"
+echo -e "  ${BOLD}║${NC}  ${BOLD}Data dir:${NC}  ${DATA_DIR}            ${BOLD}║${NC}"
+echo -e "  ${BOLD}╚══════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# --- Phase 1: System dependencies ---
+step() {
+  local num=$1
+  local total=$2
+  local label=$3
+  echo ""
+  echo -e "  ${BOLD}┃${NC} ${CYAN}Step ${num}/${total}${NC} ─ ${BOLD}${label}${NC}"
+  echo -e "  ${BOLD}┃${NC}"
+}
 
-echo "[1/5] Installing system dependencies..."
+sub_ok()   { echo -e "  ${BOLD}┃${NC}   ${GREEN}✓${NC} $1"; }
+sub_info() { echo -e "  ${BOLD}┃${NC}     $1"; }
+sub_warn() { echo -e "  ${BOLD}┃${NC}   ${YELLOW}⚠${NC} $1"; }
+sub_err()  { echo -e "  ${BOLD}┃${NC}   ${RED}✗${NC} $1" >&2; }
+step_done() {
+  echo -e "  ${BOLD}┃${NC}"
+  echo -e "  ${BOLD}┃${NC} ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+# ─────────────────────────────────────────────────
+#  STEP 1: System Dependencies
+# ─────────────────────────────────────────────────
+
+step 1 5 "Installing system dependencies"
 
 # First ensure git is available (needed for gh and cloning)
 if ! command -v git &>/dev/null; then
-  info "Installing git..."
+  sub_info "Installing git..."
   pkg install -y git
 fi
 
@@ -118,60 +144,62 @@ pkg install -y curl patchelf 2>/dev/null || true
 
 # Install glibc-runner for ELF binary compatibility
 if [ ! -f "$GLIBC_LD" ]; then
-  info "Installing glibc-runner..."
+  sub_info "Installing glibc-runner..."
   pkg install -y glibc-runner 2>/dev/null || {
-    warn "glibc-runner not in default repos, trying glibc-repo..."
+    sub_warn "glibc-runner not in default repos, trying glibc-repo..."
     pkg install -y glibc-repo 2>/dev/null || true
     pkg update 2>/dev/null || true
     pkg install -y glibc-runner 2>/dev/null || {
-      err "Could not install glibc-runner."
-      err "See: https://github.com/termux/termux-packages/wiki/glibc"
+      sub_err "Could not install glibc-runner."
+      sub_err "See: https://github.com/termux/termux-packages/wiki/glibc"
       exit 1
     }
   }
 fi
 
-ok "git: $(git --version 2>/dev/null || echo 'missing')"
-ok "curl: $(curl --version 2>/dev/null | head -1 || echo 'missing')"
-ok "patchelf: $(patchelf --version 2>/dev/null || echo 'installed')"
-ok "glibc-runner: $(if [ -f "$GLIBC_LD" ]; then echo 'installed'; else echo 'missing'; fi)"
+	sub_ok "git: $(git --version 2>/dev/null || echo 'missing')"
+	sub_ok "curl: $(curl --version 2>/dev/null | head -1 || echo 'missing')"
+	sub_ok "patchelf: $(patchelf --version 2>/dev/null || echo 'installed')"
+	sub_ok "glibc-runner: $(if [ -f "$GLIBC_LD" ]; then echo 'installed'; else echo 'missing'; fi)"
+	
+	step_done
 
-echo ""
+# ─────────────────────────────────────────────────
+#  STEP 2: Obtain Binaries
+# ─────────────────────────────────────────────────
 
-# --- Phase 2: Obtain binaries ---
-
-echo "[2/5] Obtaining jxproxy binaries..."
+step 2 5 "Obtaining jxproxy binaries"
 
 mkdir -p "$BIN_DIR" "$DATA_DIR"
 
 if [ -n "$FROM_DIST" ]; then
-  # Copy pre-built binaries from local dist directory
-  info "Using binaries from: $FROM_DIST"
+	  # Copy pre-built binaries from local dist directory
+	  sub_info "Using binaries from: $FROM_DIST"
   CLI_SRC="$FROM_DIST/jxproxy"
   PROXY_SRC="$FROM_DIST/jxproxy-proxy"
 
   CLI_DOWNLOADED=false
   PROXY_DOWNLOADED=false
 
-  if [ -f "$CLI_SRC" ] && [ -x "$CLI_SRC" ]; then
-    LD_PRELOAD='' "$PATCHELF" --set-interpreter "$GLIBC_LD" "$CLI_SRC" 2>/dev/null || true
-    cp "$CLI_SRC" "$BIN_DIR/jxproxy-cli"
-    chmod 755 "$BIN_DIR/jxproxy-cli"
-    ok "CLI binary copied: $BIN_DIR/jxproxy-cli"
-    CLI_DOWNLOADED=true
-  else
-    warn "CLI binary not found at $CLI_SRC"
-  fi
-
-  if [ -f "$PROXY_SRC" ] && [ -x "$PROXY_SRC" ]; then
-    LD_PRELOAD='' "$PATCHELF" --set-interpreter "$GLIBC_LD" "$PROXY_SRC" 2>/dev/null || true
-    cp "$PROXY_SRC" "$BIN_DIR/jxproxy-proxy"
-    chmod 755 "$BIN_DIR/jxproxy-proxy"
-    ok "Proxy binary copied: $BIN_DIR/jxproxy-proxy"
-    PROXY_DOWNLOADED=true
-  else
-    warn "Proxy binary not found at $PROXY_SRC"
-  fi
+	if [ -f "$CLI_SRC" ] && [ -x "$CLI_SRC" ]; then
+	    LD_PRELOAD='' "$PATCHELF" --set-interpreter "$GLIBC_LD" "$CLI_SRC" 2>/dev/null || true
+	    cp "$CLI_SRC" "$BIN_DIR/jxproxy-cli"
+	    chmod 755 "$BIN_DIR/jxproxy-cli"
+	    sub_ok "CLI binary copied: $BIN_DIR/jxproxy-cli"
+	    CLI_DOWNLOADED=true
+	  else
+	    sub_warn "CLI binary not found at $CLI_SRC"
+	  fi
+	
+	  if [ -f "$PROXY_SRC" ] && [ -x "$PROXY_SRC" ]; then
+	    LD_PRELOAD='' "$PATCHELF" --set-interpreter "$GLIBC_LD" "$PROXY_SRC" 2>/dev/null || true
+	    cp "$PROXY_SRC" "$BIN_DIR/jxproxy-proxy"
+	    chmod 755 "$BIN_DIR/jxproxy-proxy"
+	    sub_ok "Proxy binary copied: $BIN_DIR/jxproxy-proxy"
+	    PROXY_DOWNLOADED=true
+	  else
+	    sub_warn "Proxy binary not found at $PROXY_SRC"
+	  fi
 else
   # Download pre-built binaries from GitHub Releases
   download_and_patch() {
@@ -180,26 +208,26 @@ else
     local target="$BIN_DIR/$name"
     local url="$RELEASE_URL/$filename"
 
-    if [ -f "$target" ] && [ -x "$target" ]; then
-      info "$name already installed at $target"
-      return 0
-    fi
+	    if [ -f "$target" ] && [ -x "$target" ]; then
+	      sub_info "$name already installed at $target"
+	      return 0
+	    fi
 
-    info "Downloading $name from $GH_REPO releases..."
-    curl -fsSL -o "$target.tmp" "$url" || {
-      warn "Download failed — $filename not found in latest release"
-      warn "  $url"
-      return 1
-    }
-
-    # Patch the ELF interpreter for Termux glibc compatibility
-    LD_PRELOAD='' "$PATCHELF" --set-interpreter "$GLIBC_LD" "$target.tmp" 2>/dev/null || {
-      warn "ELF patching skipped (optional — binary may still work via proot)"
-    }
-
-    chmod 755 "$target.tmp"
-    mv "$target.tmp" "$target"
-    ok "$name installed: $target"
+	sub_info "Downloading $name from GitHub releases..."
+	    curl -fsSL -o "$target.tmp" "$url" || {
+	      sub_warn "Download failed — $filename not found in latest release"
+	      sub_warn "  $url"
+	      return 1
+	    }
+	
+	    # Patch the ELF interpreter for Termux glibc compatibility
+	    LD_PRELOAD='' "$PATCHELF" --set-interpreter "$GLIBC_LD" "$target.tmp" 2>/dev/null || {
+	      sub_warn "ELF patching skipped (binary may still work via proot)"
+	    }
+	
+	    chmod 755 "$target.tmp"
+	    mv "$target.tmp" "$target"
+	    sub_ok "$name installed: $target"
   }
 
   CLI_DOWNLOADED=false
@@ -209,11 +237,13 @@ else
   download_and_patch "jxproxy-proxy" "jxproxy-proxy-${BINARY_SUFFIX}" && PROXY_DOWNLOADED=true
 fi
 
-echo ""
+step_done
 
-# --- Phase 3: Install launcher ---
+# ─────────────────────────────────────────────────
+#  STEP 3: Install Launcher
+# ─────────────────────────────────────────────────
 
-echo "[3/5] Installing launcher..."
+step 3 5 "Installing launcher"
 
 LAUNCHER="$BIN_DIR/jxproxy"
 
@@ -222,20 +252,22 @@ LAUNCHER_URL="https://raw.githubusercontent.com/marshaljlee/jxproxy/main/install
 if [ -f "$(dirname "$0")/android-launcher.sh" ]; then
   cp "$(dirname "$0")/android-launcher.sh" "$LAUNCHER"
   chmod 755 "$LAUNCHER"
-  ok "Launcher installed: $LAUNCHER"
+  sub_ok "Launcher installed: $LAUNCHER"
 elif curl -fsSL -o "$LAUNCHER" "$LAUNCHER_URL"; then
   chmod 755 "$LAUNCHER"
-  ok "Launcher downloaded and installed: $LAUNCHER"
+  sub_ok "Launcher downloaded and installed: $LAUNCHER"
 else
-  warn "Could not install launcher — run jxproxy-cli directly"
-  warn "  jxproxy-cli -- --help"
+  sub_warn "Could not install launcher — run jxproxy-cli directly"
+  sub_warn "  jxproxy-cli -- --help"
 fi
 
-echo ""
+step_done
 
-# --- Phase 4: Configure ---
+# ─────────────────────────────────────────────────
+#  STEP 4: Configure
+# ─────────────────────────────────────────────────
 
-echo "[4/5] Configuring..."
+step 4 5 "Configuring"
 
 CONFIG_FILE="$DATA_DIR/config.env"
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -252,61 +284,64 @@ ENABLE_MODEL_THINKING=true
 # API key — set this:
 # ANTHROPIC_API_KEY=sk-ant-...
 CONFIGEOF
-  ok "Config created: $CONFIG_FILE"
+  sub_ok "Config created: $CONFIG_FILE"
 fi
 
 # Add to PATH
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   echo "export PATH=\"\$PATH:$BIN_DIR\"" >> "$HOME/.bashrc"
   echo "export PATH=\"\$PATH:$BIN_DIR\"" >> "$HOME/.zshrc" 2>/dev/null || true
-  ok "Added $BIN_DIR to PATH in ~/.bashrc"
+  sub_ok "Added $BIN_DIR to PATH in ~/.bashrc"
 fi
 
-echo ""
+step_done
 
-# --- Phase 5: Smoke test ---
+# ─────────────────────────────────────────────────
+#  STEP 5: Verification
+# ─────────────────────────────────────────────────
 
-echo "[5/5] Verification..."
+step 5 5 "Verifying installation"
 
 if $CLI_DOWNLOADED; then
-	  if "$BIN_DIR/jxproxy-cli" --version 2>/dev/null || "$BIN_DIR/jxproxy-cli" --help >/dev/null 2>&1; then
-	    ok "CLI binary smoke test passed"
-	  else
-	    warn "CLI binary smoke test skipped (may need proot or glibc environment)"
-	    warn "  Binary is at: $BIN_DIR/jxproxy-cli"
-	    warn "  Run via the jxproxy launcher, or within proot-distro if native execution fails:"
-	    warn "    proot-distro login ubuntu"
-	    warn "    apt install curl # then run jxproxy there"
-	  fi
-	fi
+  if "$BIN_DIR/jxproxy-cli" --version 2>/dev/null || "$BIN_DIR/jxproxy-cli" --help >/dev/null 2>&1; then
+    sub_ok "CLI binary smoke test passed"
+  else
+    sub_warn "CLI binary smoke test skipped (may need proot or glibc environment)"
+    sub_warn "  Binary is at: $BIN_DIR/jxproxy-cli"
+    sub_warn "  Run via the jxproxy launcher, or within proot-distro if native exec fails"
+  fi
+fi
 
 if $PROXY_DOWNLOADED; then
   chmod 755 "$BIN_DIR/jxproxy-proxy"
   timeout 3 "$BIN_DIR/jxproxy-proxy" &
   sleep 1
   if curl -sf "http://127.0.0.1:5529/health" >/dev/null 2>&1; then
-    ok "Proxy binary smoke test passed"
-    # Stop the test proxy
+    sub_ok "Proxy binary smoke test passed"
     kill %1 2>/dev/null || true
   else
-    warn "Proxy smoke test skipped (will start on launch)"
+    sub_warn "Proxy smoke test skipped (will start on launch)"
     kill %1 2>/dev/null || true
   fi
 fi
 
+step_done
+
+# ─────────────────────────────────────────────────
+#  DONE
+# ─────────────────────────────────────────────────
+
 echo ""
-echo "  Done."
+echo -e "  ${BOLD}╔══════════════════════════════════════════════════════════╗${NC}"
+echo -e "  ${BOLD}║${NC}       ${GREEN}✓ jxproxy installed successfully!${NC}              ${BOLD}║${NC}"
+echo -e "  ${BOLD}╚══════════════════════════════════════════════════════════╝${NC}"
 echo ""
-echo "  To launch:"
+echo -e "  ${BOLD}To launch:${NC}"
 echo "    jxproxy"
 echo ""
-echo "  Or start the proxy + CLI separately:"
-echo "    jxproxy-proxy &"
-echo "    ANTHROPIC_BASE_URL=http://127.0.0.1:5529 ANTHROPIC_AUTH_TOKEN=jxproxy jxproxy"
+echo -e "  ${BOLD}Config:${NC}   ${CONFIG_FILE}"
+echo -e "  ${BOLD}Logs:${NC}     ${DATA_DIR}/proxy.log"
 echo ""
-echo "  Config: $CONFIG_FILE"
-echo "  Logs:   $DATA_DIR/proxy.log"
-echo ""
-echo "  NOTE: You may need to close and reopen Termux, or run:"
+echo -e "  ${BOLD}NOTE:${NC} You may need to close and reopen Termux, or run:"
 echo "    source ~/.bashrc"
 echo ""

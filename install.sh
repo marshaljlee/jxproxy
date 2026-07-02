@@ -18,6 +18,14 @@
 
 set -euo pipefail
 
+# --- Colors ---
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
 # --- Config ---
 REPO="https://github.com/marshaljlee/jxproxy.git"
 CLONE_DIR="${HOME}/.jxproxy-source"
@@ -70,68 +78,95 @@ case "$ARCH" in
     ;;
 esac
 
+# ─────────────────────────────────────────────────
+#  HEADBOARD — TUI-Style Big Banner
+# ─────────────────────────────────────────────────
+
 echo ""
-echo "  jxproxy Installer"
-echo "  ================="
-echo "  Platform: $PLATFORM ($ARCH_BITS)"
-echo "  Bin dir:  $BIN_DIR"
-echo "  Data dir: $DATA_DIR"
+echo -e "  ${BOLD}╔══════════════════════════════════════════════════════════╗${NC}"
+echo -e "  ${BOLD}║${NC}                    ${CYAN}jxproxy Installer${NC}                    ${BOLD}║${NC}"
+echo -e "  ${BOLD}║${NC}                                                          ${BOLD}║${NC}"
+echo -e "  ${BOLD}║${NC}  ${BOLD}Platform:${NC}  ${PLATFORM} (${ARCH_BITS})                           ${BOLD}║${NC}"
+echo -e "  ${BOLD}║${NC}  ${BOLD}Bin dir:${NC}   ${BIN_DIR}            ${BOLD}║${NC}"
+echo -e "  ${BOLD}║${NC}  ${BOLD}Data dir:${NC}  ${DATA_DIR}            ${BOLD}║${NC}"
+echo -e "  ${BOLD}╚══════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# --- Dependencies ---
+step() {
+  local num=$1
+  local total=$2
+  local label=$3
+  echo ""
+  echo -e "  ${BOLD}┃${NC} ${CYAN}Step ${num}/${total}${NC} ─ ${BOLD}${label}${NC}"
+  echo -e "  ${BOLD}┃${NC}"
+}
 
-echo "[1/5] Checking dependencies..."
+sub_ok()   { echo -e "  ${BOLD}┃${NC}   ${GREEN}✓${NC} $1"; }
+sub_info() { echo -e "  ${BOLD}┃${NC}     $1"; }
+sub_warn() { echo -e "  ${BOLD}┃${NC}   ${YELLOW}⚠${NC} $1"; }
+sub_err()  { echo -e "  ${BOLD}┃${NC}   ${RED}✗${NC} $1" >&2; }
+step_done() {
+  echo -e "  ${BOLD}┃${NC}"
+  echo -e "  ${BOLD}┃${NC} ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+# ─────────────────────────────────────────────────
+#  STEP 1: Dependencies
+# ─────────────────────────────────────────────────
+
+step 1 5 "Checking dependencies"
 
 if ! command -v git &>/dev/null; then
-	if [ "$PLATFORM" = "macos" ]; then
-	    echo "  Installing git (Xcode Command Line Tools)..."
-	    xcode-select --install 2>/dev/null || true
-	    # Xcode CLI tools install is asynchronous — poll until git is available
-	    echo "  Waiting for Xcode CLI tools installation to complete..."
-	    for i in $(seq 1 60); do
-	      if command -v git &>/dev/null; then
-	        break
-	      fi
-	      sleep 2
-	    done
-	    if ! command -v git &>/dev/null; then
-	      echo "  Xcode CLI tools install did not complete in 2 minutes."
-	      echo "  Try running manually: xcode-select --install"
-	      echo "  Or install git from https://git-scm.com/download/mac"
-	      exit 1
-	    fi
-	  else
-	    echo "  Please install git: apt-get install git (Debian) or yum install git (RHEL)"
-	    exit 1
-	  fi
-	fi
-	
-	if ! command -v bun &>/dev/null; then
-	  echo "  Installing Bun runtime..."
-	  curl -fsSL https://bun.sh/install | bash
-	  export BUN_INSTALL="${HOME}/.bun"
-	  export PATH="${BUN_INSTALL}/bin:${PATH}"
-	fi
-	
-	BUN_VER=$(bun --version 2>/dev/null || echo "0")
-	
-	# Enforce minimum Bun version (1.3.11+)
-	if [ "$(printf '%s\n' "1.3.11" "$BUN_VER" | sort -V | head -n1)" != "1.3.11" ]; then
-	  echo "  Bun ${BUN_VER} is too old. jxproxy requires Bun 1.3.11+."
-	  echo "  Upgrade with: curl -fsSL https://bun.sh/install | bash"
-	  exit 1
-	fi
-	
-	echo "  ✓ bun ${BUN_VER}"
-	echo "  ✓ git"
-echo ""
+  if [ "$PLATFORM" = "macos" ]; then
+    sub_info "Installing git (Xcode Command Line Tools)..."
+    xcode-select --install 2>/dev/null || true
+    sub_info "Waiting for Xcode CLI tools installation to complete..."
+    for i in $(seq 1 60); do
+      if command -v git &>/dev/null; then
+        break
+      fi
+      sleep 2
+    done
+    if ! command -v git &>/dev/null; then
+      sub_err "Xcode CLI tools install did not complete in 2 minutes."
+      sub_err "Try running manually: xcode-select --install"
+      sub_err "Or install git from https://git-scm.com/download/mac"
+      exit 1
+    fi
+  else
+    sub_err "Please install git: apt-get install git (Debian) or yum install git (RHEL)"
+    exit 1
+  fi
+fi
 
-# --- Clone Repository ---
+if ! command -v bun &>/dev/null; then
+  sub_info "Installing Bun runtime..."
+  curl -fsSL https://bun.sh/install | bash
+  export BUN_INSTALL="${HOME}/.bun"
+  export PATH="${BUN_INSTALL}/bin:${PATH}"
+fi
 
-echo "[2/5] Cloning jxproxy..."
+BUN_VER=$(bun --version 2>/dev/null || echo "0")
+
+# Enforce minimum Bun version (1.3.11+)
+if [ "$(printf '%s\n' "1.3.11" "$BUN_VER" | sort -V | head -n1)" != "1.3.11" ]; then
+  sub_err "Bun ${BUN_VER} is too old. jxproxy requires Bun 1.3.11+."
+  sub_err "Upgrade with: curl -fsSL https://bun.sh/install | bash"
+  exit 1
+fi
+
+sub_ok "bun ${BUN_VER}"
+sub_ok "git"
+step_done
+
+# ─────────────────────────────────────────────────
+#  STEP 2: Clone Repository
+# ─────────────────────────────────────────────────
+
+step 2 5 "Cloning jxproxy repository"
 
 if [ -d "$CLONE_DIR" ]; then
-  echo "  Updating existing clone..."
+  sub_info "Updating existing clone..."
   cd "$CLONE_DIR"
   git pull --ff-only
 else
@@ -143,60 +178,69 @@ else
   cd "$CLONE_DIR"
 fi
 
-echo ""
+sub_ok "Repository ready at ${CLONE_DIR}"
+step_done
 
-# --- Bootstrap ---
+# ─────────────────────────────────────────────────
+#  STEP 3: Bootstrap
+# ─────────────────────────────────────────────────
 
-echo "[3/5] Bootstrapping build environment..."
-cd "$CLONE_DIR"
+step 3 5 "Bootstrapping build environment"
 
 if [ -d "src" ] && [ -f "src/entrypoints/cli.tsx" ]; then
-  echo "  ✓ Source already present"
+  sub_ok "Source already present"
 else
   bash scripts/bootstrap.sh ${MIN_CLONE:+"--min"}
 fi
 
-echo ""
+step_done
 
-# --- Build ---
+# ─────────────────────────────────────────────────
+#  STEP 4: Build
+# ─────────────────────────────────────────────────
 
-echo "[4/5] Building jxproxy..."
+step 4 5 "Building jxproxy binaries"
 
 mkdir -p "$BIN_DIR" "$DATA_DIR"
 
 if [ -z "$NO_BUILD" ]; then
-    bun run build 2>&1 | tail -5
-    echo "  ✓ CLI binary built"
+  sub_info "Compiling CLI binary (this may take a minute)..."
+  bun run build 2>&1 | tail -5
+  sub_ok "CLI binary built"
 
-    # Build proxy with host-native target (Bun.serve has no arch-specific deps)
-    bun build ./proxy/server.ts --compile --target=bun --minify --bytecode --outfile ./dist/jxproxy-proxy 2>&1 | tail -5 || {
-      echo "  ⚠ Proxy binary build skipped (non-fatal)"
-    }
-  else
-    echo "  Skipping build (--no-build flag)"
-  fi
+  sub_info "Compiling proxy binary..."
+  bun build ./proxy/server.ts --compile --target=bun --minify --bytecode --outfile ./dist/jxproxy-proxy 2>&1 | tail -5 || {
+    sub_warn "Proxy binary build skipped (non-fatal)"
+  }
+else
+  sub_info "Skipping build (--no-build flag)"
+fi
 
-  # --- Install ---
+step_done
 
-  echo "[5/5] Installing..."
+# ─────────────────────────────────────────────────
+#  STEP 5: Install
+# ─────────────────────────────────────────────────
 
-  # Copy CLI binary as jxproxy-cli (launcher script uses the name jxproxy — no collision)
-  if [ -f "dist/jxproxy" ]; then
-    cp "dist/jxproxy" "$BIN_DIR/jxproxy-cli"
-    chmod 755 "$BIN_DIR/jxproxy-cli"
-    echo "  ✓ Installed: $BIN_DIR/jxproxy-cli"
-  fi
+step 5 5 "Installing to system"
 
-  if [ -f "dist/jxproxy-proxy" ]; then
-    cp "dist/jxproxy-proxy" "$BIN_DIR/jxproxy-proxy"
-    chmod 755 "$BIN_DIR/jxproxy-proxy"
-    echo "  ✓ Installed: $BIN_DIR/jxproxy-proxy"
-  fi
+# Copy CLI binary as jxproxy-cli (launcher script uses the name jxproxy — no collision)
+if [ -f "dist/jxproxy" ]; then
+  cp "dist/jxproxy" "$BIN_DIR/jxproxy-cli"
+  chmod 755 "$BIN_DIR/jxproxy-cli"
+  sub_ok "CLI binary → ${BIN_DIR}/jxproxy-cli"
+fi
 
-  # Install launcher (user-facing entry point — jxproxy)
-  cp "scripts/jxproxy-launcher.sh" "$BIN_DIR/jxproxy"
-  chmod 755 "$BIN_DIR/jxproxy"
-  echo "  ✓ Launcher: $BIN_DIR/jxproxy"
+if [ -f "dist/jxproxy-proxy" ]; then
+  cp "dist/jxproxy-proxy" "$BIN_DIR/jxproxy-proxy"
+  chmod 755 "$BIN_DIR/jxproxy-proxy"
+  sub_ok "Proxy binary → ${BIN_DIR}/jxproxy-proxy"
+fi
+
+# Install launcher (user-facing entry point — jxproxy)
+cp "scripts/jxproxy-launcher.sh" "$BIN_DIR/jxproxy"
+chmod 755 "$BIN_DIR/jxproxy"
+sub_ok "Launcher → ${BIN_DIR}/jxproxy"
 
 # Create default config
 CONFIG_FILE="$DATA_DIR/config.env"
@@ -216,7 +260,7 @@ ENABLE_MODEL_THINKING=true
 # OPENROUTER_API_KEY=sk-or-...
 # OPENAI_API_KEY=sk-...
 CONFIGEOF
-  echo "  ✓ Config: $CONFIG_FILE"
+  sub_ok "Config created → ${CONFIG_FILE}"
 fi
 
 # Add to PATH if needed
@@ -229,22 +273,26 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   esac
   if [ -n "$SHELL_CONFIG" ] && [ -f "$SHELL_CONFIG" ]; then
     echo "export PATH=\"\$PATH:$BIN_DIR\"" >> "$SHELL_CONFIG"
-    echo "  ✓ Added $BIN_DIR to PATH in $SHELL_CONFIG"
-    echo "    Restart your shell or run: export PATH=\"\$PATH:$BIN_DIR\""
+    sub_ok "Added ${BIN_DIR} to PATH in ${SHELL_CONFIG}"
   fi
 fi
 
-echo ""
+step_done
 
-# --- Done ---
+# ─────────────────────────────────────────────────
+#  DONE
+# ─────────────────────────────────────────────────
 
-echo "  ✓ jxproxy installed!"
 echo ""
-echo "  Quick start:"
+echo -e "  ${BOLD}╔══════════════════════════════════════════════════════════╗${NC}"
+echo -e "  ${BOLD}║${NC}          ${GREEN}✓ jxproxy installed successfully!${NC}          ${BOLD}║${NC}"
+echo -e "  ${BOLD}╚══════════════════════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "  ${BOLD}Quick start:${NC}"
 echo "    jxproxy             # Launch proxy + CLI"
 echo "    jxproxy -- --help   # CLI help"
 echo ""
-echo "  Config:  $CONFIG_FILE"
-echo "  Binaries: $BIN_DIR/jxproxy"
-echo "  Logs:    $DATA_DIR/proxy.log"
+echo -e "  ${BOLD}Config:${NC}   ${CONFIG_FILE}"
+echo -e "  ${BOLD}Binaries:${NC} ${BIN_DIR}/jxproxy"
+echo -e "  ${BOLD}Logs:${NC}     ${DATA_DIR}/proxy.log"
 echo ""
