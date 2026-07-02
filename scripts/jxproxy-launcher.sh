@@ -23,12 +23,14 @@ set -euo pipefail
 
 # --- Configuration ---
 
-JXPROXY_PORT="${JXPROXY_PORT:-5529}"
+JXPROXY_BASE_PORT="${JXPROXY_BASE_PORT:-5529}"
+JXPROXY_PORT="${JXPROXY_PORT:-$JXPROXY_BASE_PORT}"
 JXPROXY_PROVIDER="${JXPROXY_PROVIDER:-direct}"
 JXPROXY_DATA_DIR="${JXPROXY_DATA_DIR:-$HOME/.jxproxy}"
-JXPROXY_PID_FILE="$JXPROXY_DATA_DIR/proxy.pid"
-JXPROXY_LOG_FILE="$JXPROXY_DATA_DIR/proxy.log"
+JXPROXY_PID_FILE="$JXPROXY_DATA_DIR/proxy-${JXPROXY_PORT}.pid"
+JXPROXY_LOG_FILE="$JXPROXY_DATA_DIR/proxy-${JXPROXY_PORT}.log"
 JXPROXY_CONFIG_FILE="$JXPROXY_DATA_DIR/config.env"
+JXPROXY_MULTI="${JXPROXY_MULTI:-auto}"  # auto|yes|no — auto-assign ports
 
 # Auto-detect binary paths relative to this script
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -77,12 +79,15 @@ Usage:
   jxproxy -- --help        Pass flags to Claude CLI
   jxproxy --help           Show this help
 
-Environment:
-  JXPROXY_PORT             Proxy port (default: 5529)
-  JXPROXY_PROVIDER         Provider: direct, openrouter, openai, local
-  ANTHROPIC_API_KEY        API key for direct Anthropic routing
-  OPENROUTER_API_KEY       API key for OpenRouter routing
-  MODEL, MODEL_OPUS, MODEL_SONNET, MODEL_HAIKU — Model routing
+	Environment:
+	  JXPROXY_PORT             Proxy port (default: 5529)
+	  JXPROXY_BASE_PORT        Base port for multi-window (default: 5529)
+	  JXPROXY_MULTI            Multi-window: auto|yes|no (default: auto)
+	  JXPROXY_MAX_WINDOWS      Max port scan range (default: 10)
+	  JXPROXY_PROVIDER         Provider: direct, openrouter, openai, local
+	  ANTHROPIC_API_KEY        API key for direct Anthropic routing
+	  OPENROUTER_API_KEY       API key for OpenRouter routing
+	  MODEL, MODEL_OPUS, MODEL_SONNET, MODEL_HAIKU — Model routing
 
 Config file: $JXPROXY_CONFIG_FILE
 Data dir:    $JXPROXY_DATA_DIR
@@ -194,14 +199,23 @@ start_proxy() {
   local pid=$!
   echo "$pid" > "$JXPROXY_PID_FILE"
 
-  # Wait for proxy to be available
+  # Wait for proxy to be available with progress bar
   for i in $(seq 1 30); do
     if curl -sf "http://127.0.0.1:$JXPROXY_PORT/health" > /dev/null 2>&1; then
-      ok "Proxy started (PID $pid) on port $JXPROXY_PORT"
+      echo -e "\r\033[K${GREEN}✓${NC} Proxy started (PID $pid) on port $JXPROXY_PORT"
       return 0
     fi
+    # Progress bar
+    pct=$(( i * 100 / 30 ))
+    filled=$(( i * 20 / 30 ))
+    bar=""
+    for j in $(seq 1 20); do
+      if [ $j -le $filled ]; then bar="${bar}█"; else bar="${bar}░"; fi
+    done
+    echo -ne "\r  ⚙️ Proxy starting... [${bar}] ${pct}%"
     sleep 0.2
   done
+  echo "" # Newline after progress bar on failure
 
   err "Proxy failed to start within 6 seconds"
   tail -20 "$JXPROXY_LOG_FILE" 2>/dev/null || true
@@ -235,25 +249,53 @@ stop_proxy() {
   fi
 }
 
-proxy_status() {
-  if [ -f "$JXPROXY_PID_FILE" ]; then
-    local pid
-    pid=$(cat "$JXPROXY_PID_FILE")
-    if kill -0 "$pid" 2>/dev/null; then
-      ok "Proxy is running (PID $pid) on port $JXPROXY_PORT"
-      if curl -sf "http://127.0.0.1:$JXPROXY_PORT/health" > /dev/null 2>&1; then
-        local health
-        health=$(curl -sf "http://127.0.0.1:$JXPROXY_PORT/health")
-        echo "  Health: $health"
-      fi
-      return 0
-    fi
-    warn "PID file exists but proxy is not running (stale)"
-    return 1
-  fi
-  warn "Proxy is not running"
-  return 1
-}
+# Check if a TCP port is in use (LISTEN state) on localhost
+is_port_in_use() {
+	  local port="$1"
+	  lsof -i TCP:"$port" -P -n 2>/dev/null | grep -q LISTEN
+	}
+
+	# Find the next available port starting from JXPROXY_BASE_PORT
+	# Used for multi-window support — each terminal gets its own proxy+CLI pair
+	find_next_port() {
+	  local max_scan="${JXPROXY_MAX_WINDOWS:-10}"
+	  local port="$JXPROXY_BASE_PORT"
+	  for i in $(seq 0 "$max_scan"); do
+	    candidate=$((JXPROXY_BASE_PORT + i))
+	    if ! is_port_in_use "$candidate"; then
+	      echo "$candidate"
+	      return 0
+	    fi
+	    port=$candidate
+	  done
+	  # All ports in range are in use — return the last one + 1
+	  echo $((JXPROXY_BASE_PORT + max_scan + 1))
+	}
+
+	proxy_status() {
+	  if [ -f "$JXPROXY_PID_FILE" ]; then
+	    local pid
+	    pid=$(cat "$JXPROXY_PID_FILE")
+	    if kill -0 "$pid" 2>/dev/null; then
+	      ok "Proxy is running (PID $pid) on port $JXPROXY_PORT"
+	      if curl -sf "http://127.0.0.1:$JXPROXY_PORT/health" > /dev/null 2>&1; then
+	        local health
+	        health=$(curl -sf "http://127.0.0.1:$JXPROXY_PORT/health")
+	        echo "  Health: $health"
+	      fi
+	      return 0
+	    fi
+	    warn "PID file exists but proxy is not running (stale)"
+	    rm -f "$JXPROXY_PID_FILE"
+	    return 1
+	  fi
+	  # Fallback: check if port is actually in use (orphaned proxy)
+	  if is_port_in_use "$JXPROXY_PORT"; then
+	    ok "Proxy is running on port $JXPROXY_PORT (orphaned — no PID file)"
+	    return 0
+	  fi
+	  return 1
+	}
 
 # --- Actions ---
 
@@ -287,7 +329,26 @@ esac
 
 # --- Default: Start proxy + CLI ---
 
-# 1. Ensure proxy binary exists, then start if not already running
+# 1. Multi-window port assignment
+# If the base proxy is already running, auto-assign a unique port so this
+# terminal gets its own independent proxy+CLI pair — no shared state.
+if [ "$JXPROXY_MULTI" = "auto" ] && [ "$JXPROXY_PORT" = "$JXPROXY_BASE_PORT" ] && proxy_status > /dev/null 2>&1; then
+  new_port=$(find_next_port)
+  if [ "$new_port" != "$JXPROXY_BASE_PORT" ]; then
+    JXPROXY_PORT="$new_port"
+    JXPROXY_PID_FILE="$JXPROXY_DATA_DIR/proxy-${JXPROXY_PORT}.pid"
+    JXPROXY_LOG_FILE="$JXPROXY_DATA_DIR/proxy-${JXPROXY_PORT}.log"
+    info "Terminal #$((new_port - JXPROXY_BASE_PORT + 1)) — using port $JXPROXY_PORT"
+  fi
+elif [ "$JXPROXY_MULTI" = "yes" ]; then
+  new_port=$(find_next_port)
+  JXPROXY_PORT="$new_port"
+  JXPROXY_PID_FILE="$JXPROXY_DATA_DIR/proxy-${JXPROXY_PORT}.pid"
+  JXPROXY_LOG_FILE="$JXPROXY_DATA_DIR/proxy-${JXPROXY_PORT}.log"
+  info "Multi-window mode — using port $JXPROXY_PORT"
+fi
+
+# 2. Ensure proxy binary exists, then start if not already running
 ensure_proxy_binary || exit 1
 if ! proxy_status > /dev/null 2>&1; then
   start_proxy "$JXPROXY_PROXY_BINARY" || {
@@ -296,7 +357,7 @@ if ! proxy_status > /dev/null 2>&1; then
   }
 fi
 
-# 2. Launch the modified Claude Code CLI pointed at the proxy
+# 3. Launch the modified Claude Code CLI pointed at the proxy
 if [ -z "$JXPROXY_CLI_BINARY" ]; then
   # Try to build it
   if [ -f "$SCRIPT_DIR/../dist/jxproxy" ]; then
@@ -312,6 +373,14 @@ if [ ! -x "$JXPROXY_CLI_BINARY" ]; then
   exit 1
 fi
 
+# 4. Verify binary is a valid Mach-O before exec (diagnoses "zsh: killed")
+if ! file "$JXPROXY_CLI_BINARY" 2>/dev/null | grep -q "Mach-O"; then
+  err "CLI binary appears corrupt or invalid: $JXPROXY_CLI_BINARY"
+  file "$JXPROXY_CLI_BINARY" 2>/dev/null || true
+  err "Rebuild with: cd ${SCRIPT_DIR}/.. && bun run build && cp dist/jxproxy \"$JXPROXY_CLI_BINARY\""
+  exit 1
+fi
+
 export ANTHROPIC_BASE_URL="http://127.0.0.1:$JXPROXY_PORT"
 export CLAUDE_CODE_AUTO_COMPACT_WINDOW="190000"
 export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY="true"
@@ -320,7 +389,7 @@ export CLAUDE_CODE_VERIFY_PLAN="false"
 # Set auth token so Claude Code sends it as x-api-key to the proxy
 export ANTHROPIC_AUTH_TOKEN="jxproxy"
 
-info "Launching CLI (ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL)..."
+info "Launching CLI (ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL)"
 echo ""
 
 exec "$JXPROXY_CLI_BINARY" "$@"

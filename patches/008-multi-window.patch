@@ -1,0 +1,13 @@
+From: jxproxy <patch@jxproxy.dev>
+Date: Thu, 2 Jul 2026 22:45:00 -0700
+Subject: [PATCH 8/8] Multi-window support: auto-assign unique ports per terminal session
+
+Each terminal gets its own independent proxy+CLI pair with no shared state,
+eliminating the "zsh: killed" issue when opening claude in multiple windows.
+
+Key changes:
+- Per-port PID and log files (proxy-5529.pid, proxy-5530.pid, etc.)
+- Auto-detect when base proxy is already running via port lsof check
+- Auto-assign next available port for each new terminal session
+- Mach-O binary validation before exec to diagnose corruption
+- JXPROXY_MULTI env var: auto (default), yes (always new port), no (legacy)
