@@ -152,7 +152,9 @@ const featureFlags = features.map((f) => `--feature=${f}`);
 
 const SOURCE_DIR = resolve(import.meta.dir, "..", "src");
 const OUT_DIR = resolve(import.meta.dir, "..", "dist");
-const OUT_FILE = resolve(OUT_DIR, isDev ? "jxproxy-dev" : "jxproxy");
+// Append target suffix when cross-compiling, keep "bun" target as bare name for backward compat
+const targetSuffix = outputTarget === "bun" ? "" : `-${outputTarget}`;
+const OUT_FILE = resolve(OUT_DIR, `${isDev ? "jxproxy-dev" : "jxproxy"}${targetSuffix}`);
 const ENTRY = resolve(SOURCE_DIR, "entrypoints", "cli.tsx");
 
 if (!existsSync(SOURCE_DIR)) {
@@ -262,7 +264,7 @@ await $`chmod 755 ${OUT_FILE}`;
 console.log(`\n  ✓ jxproxy CLI built: ${OUT_FILE}`);
 
 const PROXY_ENTRY = resolve(import.meta.dir, "..", "proxy", "server.ts");
-const PROXY_OUT = resolve(OUT_DIR, "jxproxy-proxy");
+const PROXY_OUT = resolve(OUT_DIR, `jxproxy-proxy${targetSuffix}`);
 
 if (existsSync(PROXY_ENTRY)) {
   console.log(`\n  Building proxy server...\n`);
