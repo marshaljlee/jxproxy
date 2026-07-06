@@ -78,6 +78,18 @@ JXPROXY_PROVIDER="${JXPROXY_PROVIDER:-direct}"
 CLI_BINARY="${JXPROXY_CLI_BINARY:-$BIN_DIR/jxproxy-cli}"
 PROXY_BINARY="${JXPROXY_PROXY_BINARY:-$BIN_DIR/jxproxy-proxy}"
 
+# --- glibc loader path ---
+# Bun cross-compiled linux-arm64 binaries are ET_EXEC (non-PIE), which Android
+# won't exec directly. On Termux, the glibc-runner package provides the glibc
+# loader at a known path. If available, we run binaries through it.
+# Can be set via config.env as JXPROXY_GLIBC_LD.
+if [ -z "${JXPROXY_GLIBC_LD:-}" ]; then
+  JXPROXY_GLIBC_LD="/data/data/com.termux/files/usr/glibc/lib/ld-linux-aarch64.so.1"
+fi
+if [ -n "$JXPROXY_GLIBC_LD" ] && [ ! -x "$JXPROXY_GLIBC_LD" ]; then
+  JXPROXY_GLIBC_LD=""
+fi
+
 # --- Help ---
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
@@ -130,7 +142,7 @@ start_proxy() {
   MODEL_SONNET="${MODEL_SONNET:-}" \
   MODEL_HAIKU="${MODEL_HAIKU:-}" \
   ENABLE_MODEL_THINKING="${ENABLE_MODEL_THINKING:-true}" \
-  nohup "$PROXY_BINARY" > "$LOG_FILE" 2>&1 &
+  nohup ${JXPROXY_GLIBC_LD:+"$JXPROXY_GLIBC_LD"} "$PROXY_BINARY" > "$LOG_FILE" 2>&1 &
   local pid=$!
   echo "$pid" > "$PID_FILE"
 
@@ -197,6 +209,16 @@ proxy_status() {
 
 # --- Actions ---
 
+# Run a binary through the glibc loader if available, otherwise directly.
+# On Android, non-PIE (ET_EXEC) binaries cannot be exec'd directly.
+run_via_glibc() {
+  if [ -n "$JXPROXY_GLIBC_LD" ]; then
+    exec "$JXPROXY_GLIBC_LD" "$@"
+  else
+    exec "$@"
+  fi
+}
+
 case "${1:-}" in
   --proxy-only)
     start_proxy
@@ -248,4 +270,4 @@ export CLAUDE_CODE_VERIFY_PLAN="false"
 info "Launching CLI (ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL)..."
 echo ""
 
-exec "$CLI_BINARY" "$@"
+run_via_glibc "$CLI_BINARY" "$@"

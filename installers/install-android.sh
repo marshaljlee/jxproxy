@@ -2,18 +2,16 @@
 #
 # jxproxy — Android / Termux Installer
 #
-# Installs jxproxy on Android via Termux with ELF binary patching.
+# Installs jxproxy on Android via Termux.
 #
-# This uses the same technique as claude-code-android:
-#   1. Installs glibc-runner + patchelf from Termux glibc repo
-#   2. Downloads the pre-built jxproxy linux-arm64 binary from GitHub Releases
-#   3. Patches the ELF interpreter to use Termux's glibc dynamic linker
-#   4. Installs a wrapper with auto-update checking, pre-flight smoke testing,
-#      and crash rollback
+# Bun cross-compiles linux-arm64 binaries as ET_EXEC (non-PIE), which Android
+# won't exec directly. This installer downloads pre-built binaries from GitHub
+# Releases and configures the jxproxy launcher to run them through Termux's
+# glibc-runner (ld-linux-aarch64.so.1) for ELF compatibility.
 #
 # On Termux, building from source is not possible because Bun (glibc binary)
 # cannot run on Android's bionic libc. Instead, pre-built binaries are
-# downloaded and ELF-patched — same approach as claude-code-android.
+# downloaded and run via the glibc-runner loader.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/marshaljlee/jxproxy/main/installers/install-android.sh | bash
@@ -66,7 +64,6 @@ DATA_DIR="${HOME}/.jxproxy"
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 GLIBC_PREFIX="${PREFIX}/glibc"
 GLIBC_LD="${GLIBC_PREFIX}/lib/${GLIBC_LD_NAME}"
-PATCHELF="patchelf"
 FROM_DIST=""
 
 # Parse arguments
@@ -182,7 +179,6 @@ if [ -n "$FROM_DIST" ]; then
   PROXY_DOWNLOADED=false
 
 	if [ -f "$CLI_SRC" ] && [ -x "$CLI_SRC" ]; then
-	    LD_PRELOAD='' "$PATCHELF" --set-interpreter "$GLIBC_LD" "$CLI_SRC" 2>/dev/null || true
 	    cp "$CLI_SRC" "$BIN_DIR/jxproxy-cli"
 	    chmod 755 "$BIN_DIR/jxproxy-cli"
 	    sub_ok "CLI binary copied: $BIN_DIR/jxproxy-cli"
@@ -192,7 +188,6 @@ if [ -n "$FROM_DIST" ]; then
 	  fi
 	
 	  if [ -f "$PROXY_SRC" ] && [ -x "$PROXY_SRC" ]; then
-	    LD_PRELOAD='' "$PATCHELF" --set-interpreter "$GLIBC_LD" "$PROXY_SRC" 2>/dev/null || true
 	    cp "$PROXY_SRC" "$BIN_DIR/jxproxy-proxy"
 	    chmod 755 "$BIN_DIR/jxproxy-proxy"
 	    sub_ok "Proxy binary copied: $BIN_DIR/jxproxy-proxy"
@@ -218,11 +213,6 @@ else
 	      sub_warn "Download failed — $filename not found in latest release"
 	      sub_warn "  $url"
 	      return 1
-	    }
-	
-	    # Patch the ELF interpreter for Termux glibc compatibility
-	    LD_PRELOAD='' "$PATCHELF" --set-interpreter "$GLIBC_LD" "$target.tmp" 2>/dev/null || {
-	      sub_warn "ELF patching skipped (binary may still work via proot)"
 	    }
 	
 	    chmod 755 "$target.tmp"
@@ -283,9 +273,18 @@ ENABLE_MODEL_THINKING=true
 
 # API key — set this:
 # ANTHROPIC_API_KEY=sk-ant-...
+	JXPROXY_GLIBC_LD=$GLIBC_LD
 CONFIGEOF
   sub_ok "Config created: $CONFIG_FILE"
 fi
+
+	# Ensure glibc loader path is in config (for existing configs too)
+	if ! grep -q '^JXPROXY_GLIBC_LD' "$CONFIG_FILE" 2>/dev/null; then
+	  echo "" >> "$CONFIG_FILE"
+	  echo "# glibc loader path (auto-detected)" >> "$CONFIG_FILE"
+	  echo "JXPROXY_GLIBC_LD=$GLIBC_LD" >> "$CONFIG_FILE"
+	  sub_info "Added glibc loader path to config"
+	fi
 
 # Add to PATH
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
@@ -303,25 +302,35 @@ step_done
 step 5 5 "Verifying installation"
 
 if $CLI_DOWNLOADED; then
-  if "$BIN_DIR/jxproxy-cli" --version 2>/dev/null || "$BIN_DIR/jxproxy-cli" --help >/dev/null 2>&1; then
-    sub_ok "CLI binary smoke test passed"
+  if [ -n "$GLIBC_LD" ] && [ -x "$GLIBC_LD" ]; then
+    if "$GLIBC_LD" "$BIN_DIR/jxproxy-cli" --version 2>/dev/null; then
+      sub_ok "CLI binary smoke test passed"
+    else
+      sub_warn "CLI binary smoke test skipped -- exec error"
+      sub_warn "  Run via: jxproxy"
+    fi
   else
-    sub_warn "CLI binary smoke test skipped (may need proot or glibc environment)"
-    sub_warn "  Binary is at: $BIN_DIR/jxproxy-cli"
-    sub_warn "  Run via the jxproxy launcher, or within proot-distro if native exec fails"
+    sub_warn "CLI binary smoke test skipped (glibc loader not found)"
+    sub_warn "  Install: pkg install glibc-runner"
+    sub_warn "  Then run: jxproxy"
   fi
 fi
 
 if $PROXY_DOWNLOADED; then
-  chmod 755 "$BIN_DIR/jxproxy-proxy"
-  timeout 3 "$BIN_DIR/jxproxy-proxy" &
-  sleep 1
-  if curl -sf "http://127.0.0.1:5529/health" >/dev/null 2>&1; then
-    sub_ok "Proxy binary smoke test passed"
-    kill %1 2>/dev/null || true
+  if [ -n "$GLIBC_LD" ] && [ -x "$GLIBC_LD" ]; then
+    chmod 755 "$BIN_DIR/jxproxy-proxy"
+    timeout 3 "$GLIBC_LD" "$BIN_DIR/jxproxy-proxy" &
+    sleep 1
+    if curl -sf "http://127.0.0.1:5529/health" >/dev/null 2>&1; then
+      sub_ok "Proxy binary smoke test passed"
+      kill %1 2>/dev/null || true
+    else
+      sub_warn "Proxy smoke test skipped (could not connect)"
+      kill %1 2>/dev/null || true
+    fi
   else
-    sub_warn "Proxy smoke test skipped (will start on launch)"
-    kill %1 2>/dev/null || true
+    sub_warn "Proxy smoke test skipped (glibc loader not found)"
+    sub_warn "  Proxy binary at: $BIN_DIR/jxproxy-proxy"
   fi
 fi
 
