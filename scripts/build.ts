@@ -259,6 +259,19 @@ if (proc.exitCode !== 0) {
 // Make executable
 await $`chmod 755 ${OUT_FILE}`;
 
+// Post-build: convert linux-arm64 ET_EXEC binaries to ET_DYN (PIE) for Android/Termux
+if (outputTarget.includes("linux")) {
+  const patchScript = resolve(import.meta.dir, "patch-pie.ts");
+  if (existsSync(patchScript)) {
+    const patchResult = Bun.spawnSync(["bun", "run", patchScript, OUT_FILE], {
+      stdio: ["inherit", "inherit", "inherit"],
+    });
+    if (patchResult.exitCode !== 0) {
+      console.warn(`  ⚠ PIE patching skipped for ${OUT_FILE}`);
+    }
+  }
+}
+
 // --- Build Proxy Binary Separately ---
 
 console.log(`\n  ✓ jxproxy CLI built: ${OUT_FILE}`);
@@ -288,6 +301,18 @@ if (existsSync(PROXY_ENTRY)) {
   if (proxyProc.exitCode === 0) {
     await $`chmod 755 ${PROXY_OUT}`;
     console.log(`\n  ✓ jxproxy proxy built: ${PROXY_OUT}`);
+    // Post-build: PIE patch for linux targets
+    if (outputTarget.includes("linux")) {
+      const patchScript = resolve(import.meta.dir, "patch-pie.ts");
+      if (existsSync(patchScript)) {
+        const patchResult = Bun.spawnSync(["bun", "run", patchScript, PROXY_OUT], {
+          stdio: ["inherit", "inherit", "inherit"],
+        });
+        if (patchResult.exitCode !== 0) {
+          console.warn(`  ⚠ PIE patching skipped for ${PROXY_OUT}`);
+        }
+      }
+    }
   } else {
     console.warn(`  ⚠ Proxy build failed (exit ${proxyProc.exitCode}) — CLI only`);
   }
