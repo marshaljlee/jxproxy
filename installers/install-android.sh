@@ -142,7 +142,8 @@ step 2 5 "Obtaining jxproxy binaries"
 mkdir -p "$BIN_DIR" "$DATA_DIR"
 
 download_and_patch() {
-  local name="$1" filename="$2" target="$BIN_DIR/$name"
+  local name="$1" filename="$2"
+  local target="$BIN_DIR/$name"
   local url="$RELEASE_URL/$filename"
 
   if [ -f "$target" ] && [ -x "$target" ]; then
