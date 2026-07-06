@@ -242,11 +242,16 @@ step 4 4 "Verifying installation"
 # Verify CLI through glibc loader
 if $CLI_DOWNLOADED && [ -x "$BIN_DIR/jxproxy-cli" ] && [ -f "$GLIBC_LD" ]; then
   sub_info "Testing CLI binary through glibc loader..."
-  if "$GLIBC_LD" "$BIN_DIR/jxproxy-cli" --version 2>/dev/null; then
+  set +e
+  CLI_OUTPUT=$("$GLIBC_LD" "$BIN_DIR/jxproxy-cli" --version 2>&1)
+  CLI_EXIT=$?
+  set -e
+  if [ $CLI_EXIT -eq 0 ]; then
     sub_ok "CLI binary smoke test passed"
   else
-    sub_warn "CLI smoke test failed — binary may need PIE patching"
-    sub_warn "  File: $BIN_DIR/jxproxy-cli"
+    sub_warn "CLI binary smoke test failed (exit $CLI_EXIT)"
+    sub_warn "  Output: $(echo "$CLI_OUTPUT" | head -3 | tr '\n' ' ')"
+    sub_warn "  Try: LD_LIBRARY_PATH=$(dirname "$GLIBC_LD") $GLIBC_LD $BIN_DIR/jxproxy-cli --version"
   fi
 fi
 
@@ -254,9 +259,11 @@ fi
 if $PROXY_DOWNLOADED && [ -f "$GLIBC_LD" ]; then
   chmod 755 "$BIN_DIR/jxproxy-proxy"
   sub_info "Testing proxy binary through glibc loader..."
+  GLIBC_LD_DIR="$(dirname "$GLIBC_LD")"
   JXPROXY_PORT=5529 JXPROXY_PROVIDER=direct \
+    LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}:$GLIBC_LD_DIR" \
     nohup "$GLIBC_LD" "$BIN_DIR/jxproxy-proxy" > "$DATA_DIR/proxy.log" 2>&1 &
-  local proxy_pid=$!
+  proxy_pid=$!
   sleep 2
   if kill -0 "$proxy_pid" 2>/dev/null && curl -sf "http://127.0.0.1:5529/health" >/dev/null 2>&1; then
     sub_ok "Proxy binary smoke test passed"
