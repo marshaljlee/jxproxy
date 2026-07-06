@@ -5,6 +5,10 @@
 # Starts the proxy server and the modified Claude Code CLI on Android/Termux,
 # routing all Anthropic API traffic through the proxy.
 #
+# Bun cross-compiled binaries use glibc, but Android's Bionic linker rejects
+# them for PT_TLS alignment on ARM64. All execution goes through the
+# glibc-runner loader ("$JXPROXY_GLIBC_LD") explicitly.
+#
 # Usage:
 #   jxproxy                  # Start proxy + CLI
 #   jxproxy --proxy-only     # Start proxy server only
@@ -17,6 +21,7 @@
 #   JXPROXY_PORT             — Proxy listen port (default: 5529)
 #   JXPROXY_PROVIDER         — Provider backend (default: direct)
 #   JXPROXY_DATA_DIR         — Config/data directory (default: ~/.jxproxy)
+#   JXPROXY_GLIBC_LD         — glibc loader path (auto-detected from config)
 #
 
 set -euo pipefail
@@ -59,7 +64,6 @@ load_config() {
         export "$key=$value"
       fi
     done < "$CONFIG_FILE"
-    info "Loaded config from $CONFIG_FILE"
   fi
 }
 
@@ -73,6 +77,17 @@ JXPROXY_PROVIDER="${JXPROXY_PROVIDER:-direct}"
 
 CLI_BINARY="${JXPROXY_CLI_BINARY:-$BIN_DIR/jxproxy-cli}"
 PROXY_BINARY="${JXPROXY_PROXY_BINARY:-$BIN_DIR/jxproxy-proxy}"
+
+# --- glibc loader ---
+# On Termux, glibc-runner installs the loader at a known path.
+# All jxproxy binaries must run through it (Bionic rejects PT_TLS alignment).
+# Can be set via config.env or JXPROXY_GLIBC_LD env var.
+if [ -z "${JXPROXY_GLIBC_LD:-}" ]; then
+  JXPROXY_GLIBC_LD="/data/data/com.termux/files/usr/glibc/lib/ld-linux-aarch64.so.1"
+  if [ ! -x "$JXPROXY_GLIBC_LD" ]; then
+    JXPROXY_GLIBC_LD=""
+  fi
+fi
 
 # --- Help ---
 
@@ -96,6 +111,14 @@ EOF
 fi
 
 # --- Functions ---
+
+run_via_glibc() {
+  if [ -n "${JXPROXY_GLIBC_LD:-}" ]; then
+    exec "$JXPROXY_GLIBC_LD" "$@"
+  else
+    exec "$@"
+  fi
+}
 
 start_proxy() {
   if [ ! -x "$PROXY_BINARY" ]; then
@@ -126,7 +149,7 @@ start_proxy() {
   MODEL_SONNET="${MODEL_SONNET:-}" \
   MODEL_HAIKU="${MODEL_HAIKU:-}" \
   ENABLE_MODEL_THINKING="${ENABLE_MODEL_THINKING:-true}" \
-  nohup "$PROXY_BINARY" > "$LOG_FILE" 2>&1 &
+  nohup ${JXPROXY_GLIBC_LD:+"$JXPROXY_GLIBC_LD"} "$PROXY_BINARY" > "$LOG_FILE" 2>&1 &
   local pid=$!
   echo "$pid" > "$PID_FILE"
 
@@ -243,4 +266,4 @@ export CLAUDE_CODE_VERIFY_PLAN="false"
 info "Launching CLI (ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL)..."
 echo ""
 
-exec "$CLI_BINARY" "$@"
+run_via_glibc "$CLI_BINARY" "$@"

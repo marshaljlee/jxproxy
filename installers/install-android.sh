@@ -5,8 +5,10 @@
 # Installs jxproxy on Android via Termux.
 #
 # Pre-built PIE (ET_DYN) binaries are downloaded from GitHub Releases.
-# patchelf sets the glibc-runner interpreter for glibc compatibility,
-# then binaries exec directly (PIE → Android allows execve).
+# Android's Bionic linker rejects these binaries for PT_TLS alignment
+# on ARM64, so execution happens through the glibc-runner loader:
+#   "$GLIBC_LD" "$BINARY"
+# (glibc's loader handles TLS differently — no alignment issue.)
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/marshaljlee/jxproxy/main/installers/install-android.sh | bash
@@ -104,16 +106,12 @@ step_done() { echo -e "  ${BOLD}┃${NC}"; echo -e "  ${BOLD}┃${NC} ${GREEN}�
 #  STEP 1: System Dependencies
 # ═══════════════════════════════════════════════
 
-step 1 5 "Installing system dependencies"
-
-if ! command -v git &>/dev/null; then
-  sub_info "Installing git..."; pkg install -y git
-fi
+step 1 4 "Installing system dependencies"
 
 pkg update -y 2>/dev/null || true
-pkg install -y curl patchelf 2>/dev/null || true
+pkg install -y curl python3 2>/dev/null || true
 
-# Install glibc-runner for glibc shared libraries
+# Install glibc-runner for glibc shared libraries + loader
 if [ ! -f "$GLIBC_LD" ]; then
   sub_info "Installing glibc-runner..."
   pkg install -y glibc-runner 2>/dev/null || {
@@ -129,24 +127,23 @@ if [ ! -f "$GLIBC_LD" ]; then
 fi
 
 sub_ok "curl: $(curl --version 2>/dev/null | head -1 || echo 'missing')"
-sub_ok "patchelf: $(patchelf --version 2>/dev/null || echo 'missing')"
-sub_ok "glibc libraries: $(if [ -f "$GLIBC_LD" ]; then echo 'installed'; else echo 'missing'; fi)"
+sub_ok "glibc loader: $(if [ -f "$GLIBC_LD" ]; then echo 'installed'; else echo 'missing'; fi)"
 step_done
 
 # ═══════════════════════════════════════════════
 #  STEP 2: Obtain Binaries
 # ═══════════════════════════════════════════════
 
-step 2 5 "Obtaining jxproxy binaries"
+step 2 4 "Obtaining jxproxy binaries"
 
 mkdir -p "$BIN_DIR" "$DATA_DIR"
 
-download_and_patch() {
+download_binary() {
   local name="$1" filename="$2"
   local target="$BIN_DIR/$name"
   local url="$RELEASE_URL/$filename"
 
-  if [ -f "$target" ] && [ -x "$target" ]; then
+  if [ -f "$target" ]; then
     sub_info "$name already installed at $target"
     return 0
   fi
@@ -176,77 +173,43 @@ if [ -n "$FROM_DIST" ]; then
     sub_ok "Proxy binary copied"; PROXY_DOWNLOADED=true
   else sub_warn "Proxy binary not found at $PROXY_SRC"; fi
 else
-  download_and_patch "jxproxy-cli" "jxproxy-${BINARY_SUFFIX}" && CLI_DOWNLOADED=true
-  download_and_patch "jxproxy-proxy" "jxproxy-proxy-${BINARY_SUFFIX}" && PROXY_DOWNLOADED=true
+  download_binary "jxproxy-cli" "jxproxy-${BINARY_SUFFIX}" && CLI_DOWNLOADED=true
+  download_binary "jxproxy-proxy" "jxproxy-proxy-${BINARY_SUFFIX}" && PROXY_DOWNLOADED=true
 fi
 
 step_done
 
 # ═══════════════════════════════════════════════
-#  STEP 3: Patch interpreter (patchelf)
+#  STEP 3: Install Launcher & Configure
 # ═══════════════════════════════════════════════
 
-step 3 5 "Configuring ELF interpreter for glibc compatibility"
+step 3 4 "Installing launcher & configuring"
 
-patch_interpreter() {
-  local binary="$1" name="$2"
-  if [ ! -f "$binary" ]; then sub_warn "$name not found, skipping"; return 1; fi
-
-  chmod 755 "$binary"
-
-  # Verify binary is PIE (ET_DYN) — required for Android exec
-  local e_type
-  e_type=$(python3 -c "
-import struct
-with open('$binary', 'rb') as f:
-    print(struct.unpack('<H', f.read(18)[16:18])[0])
-" 2>/dev/null || echo "0")
-
-  if [ "$e_type" = "3" ]; then
-    sub_info "$name: ET_DYN (PIE) — Android-compatible"
-  elif [ "$e_type" = "2" ]; then
-    sub_err "$name: ET_EXEC (non-PIE), not supported on Android"
-    sub_err "  Download binaries from the latest release which includes PIE-patched versions"
-    return 1
-  else
-    sub_warn "$name: Could not verify ELF type (e_type=$e_type)"
+# Write GLIBC_LD path to config so launcher can find it
+CONFIG_FILE="$DATA_DIR/config.env"
+mkdir -p "$DATA_DIR"
+if [ ! -f "$CONFIG_FILE" ]; then
+  cat > "$CONFIG_FILE" << CONFIGEOF
+# jxproxy — Android/Termux configuration
+JXPROXY_PORT=5529
+JXPROXY_AUTH_TOKEN=jxproxy
+JXPROXY_PROVIDER=direct
+MODEL=claude-sonnet-5-20251001
+ENABLE_MODEL_THINKING=true
+JXPROXY_GLIBC_LD=${GLIBC_LD}
+# API key — set this:
+# ANTHROPIC_API_KEY=sk-ant-...
+CONFIGEOF
+  sub_ok "Config created: $CONFIG_FILE"
+else
+  # Ensure GLIBC_LD is in existing config
+  if ! grep -q "JXPROXY_GLIBC_LD" "$CONFIG_FILE" 2>/dev/null; then
+    echo "JXPROXY_GLIBC_LD=${GLIBC_LD}" >> "$CONFIG_FILE"
+    sub_ok "Added JXPROXY_GLIBC_LD to existing config"
   fi
-
-  # Set glibc interpreter via patchelf
-  if command -v patchelf &>/dev/null && [ -f "$GLIBC_LD" ]; then
-    local current_interp
-    current_interp=$(patchelf --print-interpreter "$binary" 2>/dev/null || echo "")
-    if [ "$current_interp" != "$GLIBC_LD" ]; then
-      if patchelf --set-interpreter "$GLIBC_LD" "$binary" 2>/dev/null; then
-        sub_ok "$name: interpreter set to $GLIBC_LD"
-      else
-        sub_err "$name: patchelf failed — try reinstalling patchelf"
-        return 1
-      fi
-    else
-      sub_info "$name: interpreter already set correctly"
-    fi
-  else
-    sub_warn "$name: patchelf or glibc loader not available, skipping interpreter patch"
-    sub_warn "  Install: pkg install patchelf glibc-runner"
-  fi
-}
-
-if $CLI_DOWNLOADED; then
-  patch_interpreter "$BIN_DIR/jxproxy-cli" "CLI binary"
-fi
-if $PROXY_DOWNLOADED; then
-  patch_interpreter "$BIN_DIR/jxproxy-proxy" "Proxy binary"
 fi
 
-step_done
-
-# ═══════════════════════════════════════════════
-#  STEP 4: Install Launcher & Configure
-# ═══════════════════════════════════════════════
-
-step 4 5 "Installing launcher & configuring"
-
+# Install launcher
 LAUNCHER="$BIN_DIR/jxproxy"
 LAUNCHER_URL="https://raw.githubusercontent.com/marshaljlee/jxproxy/main/installers/android-launcher.sh"
 
@@ -257,24 +220,8 @@ elif curl -fsSL -o "$LAUNCHER" "$LAUNCHER_URL"; then
   chmod 755 "$LAUNCHER"
   sub_ok "Launcher downloaded and installed"
 else
-  sub_warn "Could not install launcher — run jxproxy-cli directly"
-  sub_warn "  jxproxy-cli -- --help"
-fi
-
-# Config file
-CONFIG_FILE="$DATA_DIR/config.env"
-if [ ! -f "$CONFIG_FILE" ]; then
-  cat > "$CONFIG_FILE" << CONFIGEOF
-# jxproxy — Android/Termux configuration
-JXPROXY_PORT=5529
-JXPROXY_AUTH_TOKEN=jxproxy
-JXPROXY_PROVIDER=direct
-MODEL=claude-sonnet-5-20251001
-ENABLE_MODEL_THINKING=true
-# API key — set this:
-# ANTHROPIC_API_KEY=sk-ant-...
-CONFIGEOF
-  sub_ok "Config created: $CONFIG_FILE"
+  sub_warn "Could not install launcher — run jxproxy-cli through glibc loader directly"
+  sub_warn "  ${GLIBC_LD} \$BIN_DIR/jxproxy-cli -- --help"
 fi
 
 # Add to PATH
@@ -287,31 +234,37 @@ fi
 step_done
 
 # ═══════════════════════════════════════════════
-#  STEP 5: Verification
+#  STEP 4: Verification
 # ═══════════════════════════════════════════════
 
-step 5 5 "Verifying installation"
+step 4 4 "Verifying installation"
 
-# Verify CLI
-if $CLI_DOWNLOADED && [ -x "$BIN_DIR/jxproxy-cli" ]; then
-  if "$BIN_DIR/jxproxy-cli" --version 2>/dev/null; then
+# Verify CLI through glibc loader
+if $CLI_DOWNLOADED && [ -x "$BIN_DIR/jxproxy-cli" ] && [ -f "$GLIBC_LD" ]; then
+  sub_info "Testing CLI binary through glibc loader..."
+  if "$GLIBC_LD" "$BIN_DIR/jxproxy-cli" --version 2>/dev/null; then
     sub_ok "CLI binary smoke test passed"
   else
-    sub_warn "CLI binary smoke test skipped — run manually with: jxproxy"
+    sub_warn "CLI smoke test failed — binary may need PIE patching"
+    sub_warn "  File: $BIN_DIR/jxproxy-cli"
   fi
 fi
 
-# Verify proxy
-if $PROXY_DOWNLOADED; then
+# Verify proxy through glibc loader
+if $PROXY_DOWNLOADED && [ -f "$GLIBC_LD" ]; then
   chmod 755 "$BIN_DIR/jxproxy-proxy"
-  timeout 3 "$BIN_DIR/jxproxy-proxy" &
-  sleep 1
-  if curl -sf "http://127.0.0.1:5529/health" >/dev/null 2>&1; then
+  sub_info "Testing proxy binary through glibc loader..."
+  JXPROXY_PORT=5529 JXPROXY_PROVIDER=direct \
+    nohup "$GLIBC_LD" "$BIN_DIR/jxproxy-proxy" > "$DATA_DIR/proxy.log" 2>&1 &
+  local proxy_pid=$!
+  sleep 2
+  if kill -0 "$proxy_pid" 2>/dev/null && curl -sf "http://127.0.0.1:5529/health" >/dev/null 2>&1; then
     sub_ok "Proxy binary smoke test passed"
-    kill %1 2>/dev/null || true
+    kill "$proxy_pid" 2>/dev/null || true
   else
     sub_warn "Proxy smoke test skipped (could not connect)"
-    kill %1 2>/dev/null || true
+    tail -5 "$DATA_DIR/proxy.log" 2>/dev/null || true
+    kill "$proxy_pid" 2>/dev/null || true
   fi
 fi
 
@@ -332,6 +285,6 @@ echo ""
 echo -e "  ${BOLD}Config:${NC}   ${CONFIG_FILE}"
 echo -e "  ${BOLD}Logs:${NC}     ${DATA_DIR}/proxy.log"
 echo ""
-echo -e "  ${BOLD}NOTE:${NC} You may need to close and reopen Termux, or run:"
-echo "    source ~/.bashrc"
+echo -e "  ${BOLD}NOTE:${NC} jxproxy runs through the glibc loader on Android."
+echo -e "  ${BOLD}     ${NC} This is automatic via the launcher script."
 echo ""
