@@ -22,6 +22,9 @@ curl -fsSL https://raw.githubusercontent.com/marshaljlee/jxproxy/main/install.sh
 # Android (Termux)
 curl -fsSL https://raw.githubusercontent.com/marshaljlee/jxproxy/main/installers/install-android.sh | bash
 
+# Alpine Linux
+curl -fsSL https://raw.githubusercontent.com/marshaljlee/jxproxy/main/installers/install-alpine.sh | sh
+
 # Windows (PowerShell)
 iwr -useb https://raw.githubusercontent.com/marshaljlee/jxproxy/main/installers/install.ps1 | iex
 ```
@@ -111,6 +114,7 @@ See [FEATURES.md](docs/FEATURES.md) for the full audit of all 88 flags.
 | macOS (x64) | ✅ | Native `bun build --compile` binary |
 | Linux (x64/arm64) | ✅ | Native `bun build --compile` binary |
 | Android (Termux) | ✅ | Official linux-arm64 binary + ELF interpreter patching via `glibc-runner` |
+| Alpine Linux (arm64/x64) | ✅ | Same linux-arm64/x64 binaries via gcompat (glibc ABI shim) |
 | Windows (x64) | ✅ | `bun build --compile --target windows` |
 | Windows 11 on ARM | ✅ | `bun build --compile --target bun-windows-arm64` (Bun 1.2+ auto-detected) |
 | iOS (a-Shell/iSH) | 🚧 Experimental | Linux arm64 binary via iSH appstore version |
