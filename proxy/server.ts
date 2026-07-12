@@ -34,8 +34,8 @@
 
 const DEFAULT_PORT = 5529;
 
-/** Timeout for upstream provider API calls (30 seconds). */
-const UPSTREAM_TIMEOUT_MS = 30_000;
+/** Timeout for upstream provider API calls (120 seconds for vision/slow models). */
+const UPSTREAM_TIMEOUT_MS = 120_000;
 
 // --- Type Definitions ---
 
@@ -199,7 +199,7 @@ function resolveProviderName(name: string): ProviderName {
 /**
  * Try an ordered list of provider+model pairs and return the first success.
  * - Connection errors, timeouts, and 5xx are retryable → try next provider.
- * - 4xx errors (auth, rate-limit) are NOT retryable → return immediately.
+ * - 4xx responses ARE retryable for fallback chains → try next provider.
  * - Returns the last error response if all providers fail.
  */
 async function tryProviders(
@@ -210,11 +210,11 @@ async function tryProviders(
   for (const handler of handlers) {
     try {
       const resp = await handler();
-      if (resp.status < 500) {
-        // Success (2xx) or client error (4xx) — return immediately
+      if (resp.status < 300) {
+        // 2xx success — return immediately
         return resp;
       }
-      // 5xx — retryable, try next provider
+      // 4xx or 5xx — try next provider in the chain
       lastResponse = resp;
     } catch (err) {
       // Network errors, timeouts, DNS failures — retryable
@@ -248,10 +248,19 @@ function toOpenAIChat(req: MessagesRequest): Record<string, unknown> {
   const messages = req.messages.map((msg) => {
     const content = typeof msg.content === "string"
       ? msg.content
-      : msg.content
-          .filter((c): c is { type: "text"; text: string } => c.type === "text")
-          .map((c) => c.text)
-          .join("\n");
+      : msg.content.map((c) => {
+          if (c.type === "text") {
+            return { type: "text", text: (c as { text: string }).text };
+          }
+          if (c.type === "image") {
+            const src = (c as { source: { type: string; media_type: string; data: string } }).source;
+            return {
+              type: "image_url",
+              image_url: { url: `data:${src.media_type};${src.type},${src.data}` },
+            };
+          }
+          return null;
+        }).filter(Boolean);
 
     return { role: msg.role, content };
   });
@@ -749,8 +758,25 @@ function createServer(config: ProxyConfig) {
   const primaryProvider = resolveProviderName(config.provider);
   const primaryHandler = configMap.get(primaryProvider) || configMap.get("direct")!;
 
+  // Fallback handlers: each gets its own provider config so resolveBaseUrl/resolveApiKey work correctly
   const fallbackHandlers = config.fallbackProviders
-    .map((name) => configMap.get(resolveProviderName(name)))
+    .map((name) => {
+      const provider = resolveProviderName(name);
+      const handler = configMap.get(provider);
+      if (!handler) return null;
+      // Create a provider-specific config override for base URL & API key resolution
+      const fbConfig: ProxyConfig = { ...config, provider };
+      return (req: MessagesRequest) => {
+        switch (provider) {
+          case "openai":
+            return routeToOpenAI(req, fbConfig);
+          case "local":
+            return routeToLocal(req, config); // uses config.localLlmBaseUrl directly
+          default:
+            return handler(req);
+        }
+      };
+    })
     .filter((h): h is (req: MessagesRequest) => Promise<Response> => h != null);
 
   const providerChain = [primaryProvider, ...config.fallbackProviders.map(resolveProviderName)];

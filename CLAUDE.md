@@ -35,5 +35,17 @@ bun run build:proxy # Build proxy server binary
 - `develop` — Integration branch
 - `feature/*` — Individual feature work
 
+## Runtime Configuration
+
+The proxy runs on port 5255. Set these env vars for any tool consuming the proxy:
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:5255/v1
+export ANTHROPIC_API_KEY=jxproxy
+export ANTHROPIC_AUTH_TOKEN=jxproxy
+```
+
+These are pre-configured in `~/.zshrc` on this machine.
+
 ## Verification
 Before commits: verify the binary builds, the proxy starts, and NO outbound connections are made to Anthropic telemetry endpoints.
