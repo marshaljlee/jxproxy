@@ -60,7 +60,20 @@ ARCH="$(uname -m)"
 
 case "$OS" in
   Darwin) PLATFORM="macos" ;;
-  Linux)  PLATFORM="linux" ;;
+  Linux)
+    if [ -n "${TERMUX_VERSION:-}" ]; then
+      echo ""
+      echo "  Detected Android / Termux — routing to Android installer..."
+      SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+      ANDROID_INSTALLER="${SELF_DIR}/installers/install-android.sh"
+      if [ -f "$ANDROID_INSTALLER" ]; then
+        exec bash "$ANDROID_INSTALLER" "$@"
+      fi
+      # Fallback: download from raw GitHub
+      exec curl -fsSL "https://raw.githubusercontent.com/marshaljlee/jxproxy/main/installers/install-android.sh" | bash -s -- "$@"
+    fi
+    PLATFORM="linux"
+    ;;
   *)
     echo "Unsupported OS: $OS — macOS or Linux required."
     echo "For Windows, use installers/install.ps1"

@@ -119,6 +119,30 @@ See [FEATURES.md](docs/FEATURES.md) for the full audit of all 88 flags.
 | Windows 11 on ARM | ✅ | `bun build --compile --target bun-windows-arm64` (Bun 1.2+ auto-detected) |
 | iOS (a-Shell/iSH) | 🚧 Experimental | Linux arm64 binary via iSH appstore version |
 
+## Android (ARM64) + jxcode App
+
+The jxcode Flutter app connects to jxproxy on Android to use Claude:
+
+```bash
+# 1. Install Termux from F-Droid
+# 2. Install dependencies
+pkg update && pkg upgrade
+pkg install bun proot -y
+
+# 3. Install jxproxy
+curl -fsSL https://raw.githubusercontent.com/marshaljlee/jxproxy/main/install.sh | bash
+
+# 4. Fix /tmp (Android blocks it — proot bind mount)
+proot -b /data/data/com.termux/files/usr/tmp:/tmp
+
+# 5. Start jxproxy on port 5255 (default for jxcode)
+jxproxy --port 5255
+
+# 6. Open jxcode Flutter app — it auto-connects to 127.0.0.1:5255
+```
+
+The jxcode Flutter app detects it's on Android and uses **API mode**: it sends HTTP requests to `http://127.0.0.1:5255/v1/messages` instead of spawning a CLI subprocess. The jxproxy server handles provider routing, protocol conversion, and API key management.
+
 ## Configuration
 
 Set environment variables or create `~/.jxproxy/config.env`:
