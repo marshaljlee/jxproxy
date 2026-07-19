@@ -392,4 +392,18 @@ export ANTHROPIC_AUTH_TOKEN="jxproxy"
 info "Launching CLI (ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL)"
 echo ""
 
+# Show progress dots while the binary loads (the exec replaces the shell)
+{
+  local dots=""
+  for i in $(seq 1 30); do
+    dots="${dots}."
+    printf "\r  Loading CLI [%-30s] %d/30" "$dots" "$i"
+    sleep 0.3
+  done
+  printf "\r  Loading CLI [██████████████████████████████] done\n"
+} &
+spinner_pid=$!
+
+trap 'kill "$spinner_pid" 2>/dev/null; rm -f "$JXPROXY_PID_FILE"' EXIT
+
 exec "$JXPROXY_CLI_BINARY" "$@"

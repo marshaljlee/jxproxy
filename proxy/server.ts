@@ -27,6 +27,8 @@
  *   OPENCODE_API_KEY      — API key for OpenCode Zen/Go
  *   FALLBACK_PROVIDERS    — Comma-separated fallback list (nvidia→openai, ollama→local)
  *   OPENAI_BASE_URL       — Custom base URL for openai / nvidia provider
+ *   ZAI_API_KEY           — API key for z.ai provider
+ *   ZAI_BASE_URL          — Base URL for z.ai provider
  *   LOCAL_LLM_BASE_URL    — Base URL for local / ollama provider
  *   LOCAL_LLM_MODEL       — Default model for local / ollama provider
  *   MODEL, MODEL_OPUS, MODEL_SONNET, MODEL_HAIKU — Model routing
@@ -74,11 +76,12 @@ interface ModelInfo {
 
 interface ProxyConfig {
   port: number;
-  provider: "direct" | "openrouter" | "opencode-zen" | "opencode-go" | "openai" | "local";
+  provider: "direct" | "openrouter" | "opencode-zen" | "opencode-go" | "openai" | "local" | "zai";
   anthropicApiKey: string;
   openrouterApiKey: string;
   opencodeApiKey: string;
   openaiApiKey: string;
+  zaiApiKey: string;
   model: string;
   modelOpus: string;
   modelSonnet: string;
@@ -86,6 +89,7 @@ interface ProxyConfig {
   enableThinking: boolean;
   authToken: string;
   openaiBaseUrl: string;
+  zaiBaseUrl: string;
   localLlmBaseUrl: string;
   localLlmModel: string;
   /** Ordered list of fallback provider names (e.g. "nvidia,local") */
@@ -100,6 +104,7 @@ function loadConfig(): ProxyConfig {
     openrouterApiKey: process.env.OPENROUTER_API_KEY || "",
     opencodeApiKey: process.env.OPENCODE_API_KEY || "",
     openaiApiKey: process.env.OPENAI_API_KEY || "",
+    zaiApiKey: process.env.ZAI_API_KEY || "",
     model: process.env.MODEL || "claude-sonnet-5-20251001",
     modelOpus: process.env.MODEL_OPUS || "",
     modelSonnet: process.env.MODEL_SONNET || "",
@@ -107,6 +112,7 @@ function loadConfig(): ProxyConfig {
     enableThinking: process.env.ENABLE_MODEL_THINKING !== "false",
     authToken: process.env.JXPROXY_AUTH_TOKEN || "jxproxy",
     openaiBaseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
+    zaiBaseUrl: process.env.ZAI_BASE_URL || "https://api.z.ai/v1",
     localLlmBaseUrl: process.env.LOCAL_LLM_BASE_URL || "http://127.0.0.1:11434/v1",
     localLlmModel: process.env.LOCAL_LLM_MODEL || "qwen3:latest",
     fallbackProviders: parseFallbackProviders(process.env.FALLBACK_PROVIDERS || ""),
@@ -143,6 +149,8 @@ function resolveBaseUrl(config: ProxyConfig): string {
       return "https://opencode.ai/zen/go/v1";
     case "openai":
       return config.openaiBaseUrl;
+    case "zai":
+      return config.zaiBaseUrl;
     case "local":
       return config.localLlmBaseUrl;
   }
@@ -159,6 +167,8 @@ function resolveApiKey(config: ProxyConfig): string {
       return config.opencodeApiKey;
     case "openai":
       return config.openaiApiKey;
+    case "zai":
+      return config.zaiApiKey;
     case "local":
       return ""; // No auth for local
   }
@@ -182,6 +192,7 @@ function parseFallbackProviders(raw: string): string[] {
  * Known aliases:
  *   "nvidia"  → "openai"  (uses OPENAI_BASE_URL / OPENAI_API_KEY)
  *   "ollama"  → "local"   (uses LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL)
+ *   "z.ai"    → "zai"     (uses ZAI_BASE_URL / ZAI_API_KEY)
  * Everything else is returned as-is.
  */
 type ProviderName = ProxyConfig["provider"];
@@ -191,6 +202,9 @@ function resolveProviderName(name: string): ProviderName {
       return "openai";
     case "ollama":
       return "local";
+    case "z.ai":
+    case "zai":
+      return "zai";
     default:
       return name as ProviderName;
   }
@@ -772,6 +786,8 @@ function createServer(config: ProxyConfig) {
             return routeToOpenAI(req, fbConfig);
           case "local":
             return routeToLocal(req, config); // uses config.localLlmBaseUrl directly
+          case "zai":
+            return routeToOpenAI(req, fbConfig); // z.ai is OpenAI-compatible
           default:
             return handler(req);
         }

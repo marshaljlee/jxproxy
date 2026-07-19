@@ -114,7 +114,7 @@ fi
 
 run_via_glibc() {
   if [ -n "${JXPROXY_GLIBC_LD:-}" ]; then
-    exec "$JXPROXY_GLIBC_LD" "$@"
+    exec env LD_PRELOAD="" "$JXPROXY_GLIBC_LD" "$@"
   else
     exec "$@"
   fi
@@ -149,6 +149,7 @@ start_proxy() {
   MODEL_SONNET="${MODEL_SONNET:-}" \
   MODEL_HAIKU="${MODEL_HAIKU:-}" \
   ENABLE_MODEL_THINKING="${ENABLE_MODEL_THINKING:-true}" \
+  LD_PRELOAD="" \
   nohup ${JXPROXY_GLIBC_LD:+"$JXPROXY_GLIBC_LD"} "$PROXY_BINARY" > "$LOG_FILE" 2>&1 &
   local pid=$!
   echo "$pid" > "$PID_FILE"
@@ -265,5 +266,20 @@ export CLAUDE_CODE_VERIFY_PLAN="false"
 
 info "Launching CLI (ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL)..."
 echo ""
+
+# Show progress dots while the binary loads (the exec replaces the shell)
+{
+  local dots=""
+  for i in $(seq 1 30); do
+    dots="${dots}."
+    printf "\r  Loading CLI binary [%-30s] %d/30" "$dots" "$i"
+    sleep 0.3
+  done
+  printf "\r  Loading CLI binary [██████████████████████████████] done\n"
+} &
+spinner_pid=$!
+
+# Trap ensures dots stop even if exec fails
+trap 'kill "$spinner_pid" 2>/dev/null; rm -f "$PID_FILE"' EXIT
 
 run_via_glibc "$CLI_BINARY" "$@"
