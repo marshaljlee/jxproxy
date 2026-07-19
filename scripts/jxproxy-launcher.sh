@@ -467,6 +467,8 @@ echo ""
 } &
 spinner_pid=$!
 
-trap 'kill "$spinner_pid" 2>/dev/null; rm -f "$JXPROXY_PID_FILE"' EXIT
-
+# Kill the timer before exec — exec does NOT fire EXIT traps,
+# so the background process would orphan and run forever.
+kill "$spinner_pid" 2>/dev/null || true
+printf "\r%74s\r" ""
 exec "$JXPROXY_CLI_BINARY" "$@"

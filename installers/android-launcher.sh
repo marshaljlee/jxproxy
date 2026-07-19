@@ -317,6 +317,8 @@ echo ""
 } &
 spinner_pid=$!
 
-# Trap ensures dots stop even if exec fails
-trap 'kill "$spinner_pid" 2>/dev/null; rm -f "$PID_FILE"' EXIT
+# Kill the timer before exec — exec does NOT fire EXIT traps,
+# so the background process would orphan and run forever.
+kill "$spinner_pid" 2>/dev/null || true
+printf "\r%74s\r" ""
 run_via_glibc "$CLI_BINARY" "$@"
