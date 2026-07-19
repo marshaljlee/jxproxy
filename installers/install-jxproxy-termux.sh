@@ -287,46 +287,57 @@ if [ -f "$CONFIG_FILE" ]; then
     echo "JXPROXY_GLIBC_LD=${GLIBC_LD}" >> "$CONFIG_FILE"
   fi
 else
-  # ─── This is the EXACT config from the dev machine ──────────
-  cat > "$CONFIG_FILE" << 'CONFIGEOF'
-# ─── jxproxy — exact config from macOS dev machine ─────────────
-# Proxy daemon
+  # ─── This is the EXACT config from the macOS dev machine ─────
+  cat > "$CONFIG_FILE" << CONFIGEOF
+# ─── jxproxy — provider routing config ─────────────────────────
+# Proxy settings
 JXPROXY_PORT=5255
 JXPROXY_AUTH_TOKEN=jxproxy
 JXPROXY_PROVIDER=opencode-zen
-PROXY_ENABLED=false
 
-# Base URL routing (all through local proxy)
+# Proxy routing (CLI points here, proxy routes upstream)
 ANTHROPIC_BASE_URL=http://127.0.0.1:5255/v1
 ANTHROPIC_AUTH_TOKEN=jxproxy
 OPENAI_BASE_URL=http://127.0.0.1:5255/v1
 
-# Default model
+# Default model — everything routes through opencode big-pickle
 MODEL=opencode/big-pickle
 ENABLE_MODEL_THINKING=true
 
-# Provider-tier model routing
+# Tiered model routing (model name contains "opus"/"sonnet"/"haiku")
 MODEL_OPUS=opencode/big-pickle
 MODEL_SONNET=nvidia/nemotron-3-ultra-550b-a55b
 MODEL_HAIKU=z/glm-5.2
 
-# Fallback providers (ordered — tried if primary fails)
+# Fallback providers — tried in order if the primary fails:
+#   nvidia  → uses OPENAI_BASE_URL + OPENAI_API_KEY
+#   z.ai    → uses ZAI_BASE_URL + ZAI_API_KEY
 FALLBACK_PROVIDERS=nvidia,z.ai
 
-# Local LLM (Ollama, LM Studio, llama.cpp)
+# ─── Provider 1: OpenCode (primary — opencode.ai) ────────────
+# Provider: JXPROXY_PROVIDER=opencode-zen
+# Model:    opencode/big-pickle
+# Fix any API keys you need below by removing the leading # and
+# replacing the placeholder. Run 'jxproxy --setup-api' anytime.
+#OPENCODE_API_KEY=
+
+# ─── Provider 2: NVIDIA NIM (fallback — api.nvidia.com) ──────
+# Uses: OPENAI_BASE_URL + OPENAI_API_KEY
+#OPENAI_API_KEY=
+
+# ─── Provider 3: z.ai (fallback — api.z.ai) ──────────────────
+# Base URL
+ZAI_BASE_URL=https://api.z.ai/v1
+#ZAI_API_KEY=
+
+# ─── Provider 4: Local LLM (fallback — ollama, LM Studio) ────
 LOCAL_LLM_BASE_URL=http://127.0.0.1:11434/v1
 LOCAL_LLM_MODEL=ollama/qwen
 
-# z.ai (OpenAI-compatible endpoint — fallback)
-ZAI_BASE_URL=https://api.z.ai/v1
-
-# ─── Provider API keys ─────────────────────────────────────────
-# Uncomment and set the ones you need:
-# ANTHROPIC_API_KEY=sk-ant-...
-# OPENROUTER_API_KEY=sk-or-...
-# OPENCODE_API_KEY=sk-oc-...
-# OPENAI_API_KEY=sk-...
-# ZAI_API_KEY=zai-...
+# ─── Provider 5: Direct Anthropic / OpenRouter ────────────────
+# (only needed if you switch JXPROXY_PROVIDER)
+#ANTHROPIC_API_KEY=
+#OPENROUTER_API_KEY=
 CONFIGEOF
 
   # Append platform-specific glibc path
@@ -410,6 +421,71 @@ if [ -n "\$BASH_VERSION" ] && [ -f "\$HOME/.bashrc" ]; then
 fi
 PROFILEEOF
 sub_ok "Wrote clean ~/.profile (login shells)"
+
+step_done
+
+
+# ═══════════════════════════════════════════════════════════════
+#  STEP 6 — Interactive API key wizard
+# ═══════════════════════════════════════════════════════════════
+
+step 6 6 "API key setup (interactive)"
+
+setup_api_keys() {
+  local config="$1"
+  local changed=false
+  local tty_fallback="${2:-/dev/tty}"
+
+  prompt_key() {
+    local var="$1" label="$2" example="$3" source="$4"
+    local current=""
+    if [ -f "$config" ]; then
+      current=$(grep "^${var}=" "$config" 2>/dev/null | head -1 | cut -d= -f2)
+    fi
+    if [ -n "$current" ]; then
+      sub_info "${label}: already set (${current:0:12}...)"
+      return 0
+    fi
+    echo ""
+    echo -e "  ${BOLD}┃${NC}      ${CYAN}${label}${NC}  (${source})"
+    echo -e "  ${BOLD}┃${NC}      Example: ${example}"
+    echo -ne "  ${BOLD}┃${NC}      API key (Enter to skip): "
+    read -r input < "$tty_fallback" 2>/dev/null || return 0
+    if [ -n "$input" ]; then
+      if grep -q "^#${var}=" "$config" 2>/dev/null; then
+        sed -i "s|^#${var}=.*|${var}=${input}|" "$config"
+      else
+        echo "${var}=${input}" >> "$config"
+      fi
+      changed=true
+    fi
+  }
+
+  if [ ! -t 0 ] || ! command -v read >/dev/null 2>&1; then
+    sub_info "Non-interactive terminal — skipping API key prompts"
+    sub_info "Run 'jxproxy --setup-api' later to add keys"
+    return 0
+  fi
+
+  echo ""
+  echo -e "  ${BOLD}┃${NC}      ┌──────────────────────────────────────────────────┐"
+  echo -e "  ${BOLD}┃${NC}      │  API Key Setup — paste or press Enter to skip   │"
+  echo -e "  ${BOLD}┃${NC}      │  Run 'jxproxy --setup-api' anytime to revisit.  │"
+  echo -e "  ${BOLD}┃${NC}      └──────────────────────────────────────────────────┘"
+
+  prompt_key "OPENCODE_API_KEY" "OpenCode (primary)"      "sk-oc-..."    "opencode.ai"
+  prompt_key "OPENAI_API_KEY"   "NVIDIA NIM (fallback)"   "nvapi-..."    "integrate.api.nvidia.com"
+  prompt_key "ZAI_API_KEY"      "z.ai (fallback)"         "zai-..."      "api.z.ai"
+
+  if [ "$changed" = true ]; then
+    sub_ok "API keys saved to ${config}"
+  else
+    sub_info "No keys added — edit ${config} or run 'jxproxy --setup-api' later"
+  fi
+  unset changed
+}
+
+setup_api_keys "$CONFIG_FILE"
 
 step_done
 
@@ -507,13 +583,15 @@ echo ""
 echo -e "  ${BOLD}Config file:${NC}  ${CONFIG_FILE}"
 echo -e "  ${BOLD}Log file:${NC}     ${DATA_DIR}/proxy.log"
 echo -e "  ${BOLD}Binaries:${NC}     ${BIN_DIR}/jxproxy-cli  +  ${BIN_DIR}/jxproxy-proxy"
-echo -e "  ${BOLD}Official launcher renamed to:${NC}  claude-official (still available)"
+echo -e "  ${BOLD}Official launcher renamed to:${NC}  claude-official"
+echo ""
+echo -e "  ${BOLD}API keys:${NC}"
+echo "    Edit config.env or run:  jxproxy --setup-api"
 echo ""
 echo -e "  ${BOLD}Model routing:${NC}"
 echo "    Primary:  opencode/big-pickle         (port 5255, provider: opencode-zen)"
-echo "    Fallback: nvidia/nemotron-3-ultra-55b (via OPENAI api)"
-echo "    Fallback: z.ai/glm-5.2                (via ZAI api)"
-echo "    Haiku:    z/glm-5.2"
+echo "    Fallback: nvidia/nemotron-3-ultra-55b"
+echo "    Fallback: z.ai/glm-5.2"
 echo ""
 echo -e "  ${BOLD}NOTE:${NC} jxproxy runs through the glibc loader on Android."
 echo -e "  ${BOLD}     ${NC} This is handled automatically by the launcher."

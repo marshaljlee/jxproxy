@@ -239,6 +239,39 @@ case "${1:-}" in
     proxy_status
     exit $?
     ;;
+
+  --setup-api)
+    echo ""
+    echo "  jxproxy — API Key Setup"
+    echo "  ──────────────────────────"
+    echo "  Edit ~/.jxproxy/config.env directly, or paste keys here:"
+    echo ""
+    # Reuse the setup keys function from the installer
+    SETUP_SCRIPT="$(dirname "$0")/install-jxproxy-termux.sh"
+    SETUP_SCRIPT2="$DATA_DIR/api-setup.sh"
+    if [ -f "$(dirname "$0")/install-jxproxy-termux.sh" ]; then
+      # Extract the setup function inline
+      echo "  Opening config file for editing..."
+      echo "  Press Ctrl+X when done."
+      echo ""
+      sleep 1
+      if command -v nano >/dev/null 2>&1; then
+        nano "$CONFIG_FILE"
+      else
+        vi "$CONFIG_FILE"
+      fi
+    else
+      if command -v nano >/dev/null 2>&1; then
+        nano "$CONFIG_FILE"
+      else
+        vi "$CONFIG_FILE"
+      fi
+    fi
+    echo ""
+    echo "  Done. Config: $CONFIG_FILE"
+    echo "  Restart jxproxy for changes to take effect."
+    exit 0
+    ;;
 esac
 
 # --- Default: Start proxy + CLI ---
