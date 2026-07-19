@@ -74,15 +74,18 @@ GLIBC_PREFIX="${PREFIX}/glibc"
 GLIBC_LD="${GLIBC_PREFIX}/lib/${GLIBC_LD_NAME}"
 
 FROM_DIST=""  # overridden by --from-dist flag
+UNINSTALL=""  # set by --uninstall flag
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --from-dist=*) FROM_DIST="${1#*=}"; shift ;;
     --from-dist)   FROM_DIST="$2"; shift 2 ;;
+    --uninstall|--remove) UNINSTALL="1"; shift ;;
     --help|-h)
       echo "jxproxy installer — Termux (Android)"
       echo ""
       echo "  --from-dist=PATH   Copy pre-built binaries from PATH instead of downloading"
+      echo "  --uninstall        Remove everything jxproxy installed"
       echo "  --help             Show this help"
       exit 0
       ;;
@@ -109,6 +112,130 @@ sub_info() { echo -e "  ${BOLD}┃${NC}     $1"; }
 sub_warn() { echo -e "  ${BOLD}┃${NC}   ${YELLOW}⚠${NC} $1"; }
 sub_err()  { echo -e "  ${BOLD}┃${NC}   ${RED}✗${NC} $1" >&2; }
 step_done() { echo -e "  ${BOLD}┃${NC}"; echo -e "  ${BOLD}┃${NC} ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"; }
+
+# ─────────────────────────────────────────────────────────────
+#  UNINSTALL FUNCTION
+# ─────────────────────────────────────────────────────────────
+
+do_uninstall() {
+  OFFICIAL="/data/data/com.termux/files/usr/bin/claude"
+  OFFICIAL_BAK="${OFFICIAL}-official"
+
+  echo ""
+  echo -e "  ${BOLD}╔══════════════════════════════════════════════════════════╗${NC}"
+  echo -e "  ${BOLD}║${NC}          ${RED}jxproxy — Uninstall${NC}                           ${BOLD}║${NC}"
+  echo -e "  ${BOLD}╚══════════════════════════════════════════════════════════╝${NC}"
+  echo ""
+  echo -e "  ${BOLD}The following will be PERMANENTLY deleted:${NC}"
+  echo ""
+
+  local items=()
+  local total_size=0
+
+  # Enumerate everything jxproxy installed
+  add_item() {
+    local path="$1" label="$2"
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      items+=("$path")
+      local size=0
+      if [ -f "$path" ] && [ ! -L "$path" ]; then
+        size=$(stat -c%s "$path" 2>/dev/null || echo 0)
+      elif [ -d "$path" ]; then
+        size=$(du -sb "$path" 2>/dev/null | cut -f1 || echo 0)
+      fi
+      total_size=$((total_size + size))
+      local human=""
+      if [ "$size" -ge 1048576 ]; then
+        human=" ($((size / 1048576)) MB)"
+      elif [ "$size" -ge 1024 ]; then
+        human=" ($((size / 1024)) KB)"
+      fi
+      echo -e "  ${RED}✗${NC}  ${path}${human}"
+    fi
+  }
+
+  add_item "$BIN_DIR/jxproxy"       "Launcher script"
+  add_item "$BIN_DIR/jxproxy-cli"   "CLI binary (189 MB)"
+  add_item "$BIN_DIR/jxproxy-proxy" "Proxy binary (89 MB)"
+  add_item "$BIN_DIR/claude"        "Symlink (claude → jxproxy)"
+  add_item "$DATA_DIR"              "Config + logs directory"
+  add_item "$HOME/.jxproxy_env"     "Old env file (if exists)"
+
+  echo ""
+
+  # Show official launcher restoration
+  if [ -f "$OFFICIAL_BAK" ]; then
+    echo -e "  ${GREEN}↻${NC}  ${OFFICIAL_BAK}  →  will be restored to ${OFFICIAL}"
+  elif [ -f "$OFFICIAL" ]; then
+    echo -e "  ${GREEN}✓${NC}  ${OFFICIAL}  already in place (was never renamed)"
+  fi
+
+  # Show shell config changes
+  echo ""
+  echo -e "  ${YELLOW}~${NC}  Shell config files (edits will be removed):"
+  echo "       ~/.bashrc  — jxproxy env block removed"
+  echo "       ~/.profile — jxproxy env block removed"
+  echo ""
+
+  if [ ${#items[@]} -eq 0 ] && [ ! -f "$OFFICIAL_BAK" ]; then
+    echo -e "  ${GREEN}Nothing to uninstall — jxproxy is not installed.${NC}"
+    echo ""
+    exit 0
+  fi
+
+  echo -ne "  ${BOLD}Type 'yes' to permanently remove everything above: ${NC}"
+  read -r confirm </dev/tty 2>/dev/null || confirm=""
+  if [ "$confirm" != "yes" ]; then
+    echo ""
+    echo -e "  ${YELLOW}Uninstall cancelled.${NC}"
+    exit 0
+  fi
+
+  echo ""
+
+  # Remove files / dirs
+  for path in "${items[@]}"; do
+    if [ -L "$path" ] || [ -f "$path" ]; then
+      rm -f "$path" 2>/dev/null && sub_ok "Removed ${path}" || sub_warn "Could not remove ${path}"
+    elif [ -d "$path" ]; then
+      rm -rf "$path" 2>/dev/null && sub_ok "Removed ${path}" || sub_warn "Could not remove ${path}"
+    fi
+  done
+
+  # Restore official Claude launcher
+  if [ -f "$OFFICIAL_BAK" ]; then
+    mv "$OFFICIAL_BAK" "$OFFICIAL" 2>/dev/null && sub_ok "Restored ${OFFICIAL}" || sub_warn "Could not restore ${OFFICIAL}"
+  fi
+
+  # Clean shell config files
+  for rc in "$HOME/.bashrc" "$HOME/.profile"; do
+    if [ -f "$rc" ]; then
+      if grep -q "jxproxy" "$rc" 2>/dev/null; then
+        # Remove the jxproxy block (from # >>> jxproxy to # <<< jxproxy)
+        sed -i '/# >>> jxproxy/,/# <<< jxproxy/d' "$rc" 2>/dev/null
+        # Also remove any standalone jxproxy lines
+        sed -i '/jxproxy/d' "$rc" 2>/dev/null
+        sub_ok "Cleaned jxproxy references from ${rc}"
+      fi
+    fi
+  done
+
+  echo ""
+  echo -e "  ${BOLD}╔══════════════════════════════════════════════════════════╗${NC}"
+  echo -e "  ${BOLD}║${NC}          ${GREEN}✓ jxproxy uninstalled${NC}                           ${BOLD}║${NC}"
+  echo -e "  ${BOLD}╚══════════════════════════════════════════════════════════╝${NC}"
+  echo ""
+  echo -e "  ${BOLD}To remove shell config changes manually:${NC}"
+  echo "    nano ~/.bashrc    # remove any remaining jxproxy references"
+  echo "    nano ~/.profile   # remove any remaining jxproxy references"
+  echo ""
+  exit 0
+}
+
+# ── Run uninstall if flag is set ─────────────────────────────
+if [ -n "$UNINSTALL" ]; then
+  do_uninstall
+fi
 
 echo ""
 echo -e "  ${BOLD}╔══════════════════════════════════════════════════════════╗${NC}"
