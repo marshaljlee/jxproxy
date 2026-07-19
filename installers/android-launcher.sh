@@ -300,15 +300,20 @@ export CLAUDE_CODE_VERIFY_PLAN="false"
 info "Launching CLI (ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL)..."
 echo ""
 
-# Show progress dots while the binary loads (the exec replaces the shell)
+# Show elapsed-time spinner while the binary loads (the exec replaces the shell)
 {
-  dots=""
-  for i in $(seq 1 30); do
-    dots="${dots}."
-    printf "\r  Loading CLI binary [%-30s] %d/30" "$dots" "$i"
-    sleep 0.3
+  start=$(date +%s)
+  while true; do
+    elapsed=$(( $(date +%s) - start ))
+    if [ $elapsed -lt 60 ]; then
+      printf "\r  Loading CLI binary... %ds" "$elapsed"
+    else
+      mins=$((elapsed / 60))
+      secs=$((elapsed % 60))
+      printf "\r  Loading CLI binary... %dm%02ds (large binary on slow I/O)" "$mins" "$secs"
+    fi
+    sleep 0.5
   done
-  printf "\r  Loading CLI binary [██████████████████████████████] done\n"
 } &
 spinner_pid=$!
 

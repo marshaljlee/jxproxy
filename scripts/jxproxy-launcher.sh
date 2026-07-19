@@ -458,13 +458,12 @@ info "Launching CLI (ANTHROPIC_BASE_URL=$ANTHROPIC_BASE_URL)"
 echo ""
 
 {
-  dots=""
-  for i in $(seq 1 30); do
-    dots="${dots}."
-    printf "\r  Loading CLI [%-30s] %d/30" "$dots" "$i"
-    sleep 0.3
+  start=$(date +%s)
+  while true; do
+    elapsed=$(( $(date +%s) - start ))
+    printf "\r  Loading CLI binary... %ds" "$elapsed"
+    sleep 0.5
   done
-  printf "\r  Loading CLI [██████████████████████████████] done\n"
 } &
 spinner_pid=$!
 
