@@ -32,6 +32,9 @@
  *   LOCAL_LLM_BASE_URL    — Base URL for local / ollama provider
  *   LOCAL_LLM_MODEL       — Default model for local / ollama provider
  *   MODEL, MODEL_OPUS, MODEL_SONNET, MODEL_HAIKU — Model routing
+ *   VISION_MODELS         — Comma-separated model prefixes that support vision
+ *                          (empty = all models). Images are stripped for models
+ *                          not in this list to prevent provider rejections.
  */
 
 const DEFAULT_PORT = 5529;
@@ -56,6 +59,22 @@ const BLOCKED_TOOL_NAMES = new Set([
   "web_search_preview",
   "web_fetch",
 ]);
+
+/**
+ * Model name prefixes that support vision (image input).
+ * When routing to a model whose name doesn't match any of these prefixes,
+ * image content blocks are automatically stripped from the request and
+ * replaced with a text note — preventing provider rejections.
+ *
+ * Format: comma-separated in the VISION_MODELS env var.
+ * Default: empty — all models get images (backward compatible).
+ *
+ * Example: VISION_MODELS="opencode/,nvidia/nemotron-,glm-"
+ */
+function modelSupportsVision(model: string, visionModels: string[]): boolean {
+  if (visionModels.length === 0) return true; // default: all models
+  return visionModels.some((prefix) => model.startsWith(prefix));
+}
 
 // --- Type Definitions ---
 
@@ -112,6 +131,8 @@ interface ProxyConfig {
   localLlmModel: string;
   /** Ordered list of fallback provider names (e.g. "nvidia,local") */
   fallbackProviders: string[];
+  /** Model name prefixes that support image input (empty = all models) */
+  visionModels: string[];
 }
 
 function loadConfig(): ProxyConfig {
@@ -134,7 +155,18 @@ function loadConfig(): ProxyConfig {
     localLlmBaseUrl: process.env.LOCAL_LLM_BASE_URL || "http://127.0.0.1:11434/v1",
     localLlmModel: process.env.LOCAL_LLM_MODEL || "qwen3:latest",
     fallbackProviders: parseFallbackProviders(process.env.FALLBACK_PROVIDERS || ""),
+    visionModels: parseCommaList(process.env.VISION_MODELS || ""),
   };
+}
+
+// --- Helpers ---
+
+/** Split a comma-separated string into a trimmed array, filtering empties. */
+function parseCommaList(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 // --- Model Routing ---
@@ -275,8 +307,14 @@ async function tryProviders(
 /**
  * Convert an Anthropic Messages request to an OpenAI Chat Completion request
  * for providers that use the OpenAI protocol (OpenAI, local LLMs, etc.).
+ *
+ * @param visionModels - Model name prefixes that support vision (empty = all models).
+ *   Images are automatically stripped for non-vision models to avoid provider rejection.
  */
-function toOpenAIChat(req: MessagesRequest): Record<string, unknown> {
+function toOpenAIChat(req: MessagesRequest, visionModels: string[] = []): Record<string, unknown> {
+  const modelSupportsVision = visionModels.length === 0 ||
+    visionModels.some((prefix) => req.model.startsWith(prefix));
+
   const messages = req.messages.map((msg) => {
     const content = typeof msg.content === "string"
       ? msg.content
@@ -285,6 +323,10 @@ function toOpenAIChat(req: MessagesRequest): Record<string, unknown> {
             return { type: "text", text: (c as { text: string }).text };
           }
           if (c.type === "image") {
+            if (!modelSupportsVision) {
+              // Strip image for non-vision models — replace with text note
+              return { type: "text", text: "[Image attached — model does not support vision]" };
+            }
             const src = (c as { source: { type: string; media_type: string; data: string } }).source;
             return {
               type: "image_url",
@@ -456,7 +498,7 @@ async function routeToOpenAI(
   const openaiReq = toOpenAIChat({
     ...req,
     model: resolveModel(config, req.model),
-  });
+  }, config.visionModels);
 
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
@@ -588,7 +630,10 @@ async function routeToOpenRouter(
     ? model.slice("openrouter/".length)
     : model;
 
-  const body = { ...req, model: openrouterModel };
+  const body = toOpenAIChat({
+    ...req,
+    model: openrouterModel,
+  }, config.visionModels);
 
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -598,7 +643,7 @@ async function routeToOpenRouter(
       "HTTP-Referer": "https://github.com/marshaljlee/jxproxy",
       "X-Title": "jxproxy",
     },
-    body: JSON.stringify(toOpenAIChat(body)),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
   });
 
@@ -619,7 +664,7 @@ async function routeToLocal(
   const openaiReq = toOpenAIChat({
     ...req,
     model: config.localLlmModel,
-  });
+  }, config.visionModels);
 
   const response = await fetch(`${config.localLlmBaseUrl}/chat/completions`, {
     method: "POST",
