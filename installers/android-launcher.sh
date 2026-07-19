@@ -302,7 +302,7 @@ echo ""
 
 # Show progress dots while the binary loads (the exec replaces the shell)
 {
-  local dots=""
+  dots=""
   for i in $(seq 1 30); do
     dots="${dots}."
     printf "\r  Loading CLI binary [%-30s] %d/30" "$dots" "$i"
@@ -314,5 +314,4 @@ spinner_pid=$!
 
 # Trap ensures dots stop even if exec fails
 trap 'kill "$spinner_pid" 2>/dev/null; rm -f "$PID_FILE"' EXIT
-
 run_via_glibc "$CLI_BINARY" "$@"

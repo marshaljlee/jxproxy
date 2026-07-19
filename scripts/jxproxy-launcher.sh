@@ -394,7 +394,7 @@ echo ""
 
 # Show progress dots while the binary loads (the exec replaces the shell)
 {
-  local dots=""
+  dots=""
   for i in $(seq 1 30); do
     dots="${dots}."
     printf "\r  Loading CLI [%-30s] %d/30" "$dots" "$i"
