@@ -39,6 +39,24 @@ const DEFAULT_PORT = 5529;
 /** Timeout for upstream provider API calls (120 seconds for vision/slow models). */
 const UPSTREAM_TIMEOUT_MS = 120_000;
 
+/**
+ * Tool types that are Anthropic-native and won't work when routing through
+ * an OpenAI-compatible provider (opencode-zen, opencode-go, openai, z.ai).
+ *
+ * These tools have no equivalent in the OpenAI Chat API — they're stripped
+ * at the proxy level so the upstream doesn't reject the request.
+ *
+ * Claude Code still registers its native tools; the MCP Toolbox Harness
+ * provides replacement implementations via stdio MCP at the settings.json level.
+ */
+const BLOCKED_TOOL_NAMES = new Set([
+  "computer_20241022",
+  "text_editor_20241022",
+  "bash_20241022",
+  "web_search_preview",
+  "web_fetch",
+]);
+
 // --- Type Definitions ---
 
 interface MessagesRequest {
@@ -298,19 +316,28 @@ function toOpenAIChat(req: MessagesRequest): Record<string, unknown> {
   };
 
   if (req.tools && req.tools.length > 0) {
-    body.tools = req.tools.map((t) => ({
-      type: "function",
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.input_schema,
-      },
-    }));
-    body.tool_choice = req.tool_choice?.type === "any"
-      ? "required"
-      : req.tool_choice?.type === "tool"
-        ? { type: "function", function: { name: req.tool_choice.name } }
-        : "auto";
+    // Strip Anthropic-native tool types that OpenAI-compatible APIs reject
+    const filtered = req.tools.filter((t) => !BLOCKED_TOOL_NAMES.has(t.name));
+    if (filtered.length > 0) {
+      body.tools = filtered.map((t) => ({
+        type: "function",
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.input_schema,
+        },
+      }));
+      // If tool_choice points at a tool that was blocked, fall back to auto
+      if (req.tool_choice?.type === "tool" && req.tool_choice.name && BLOCKED_TOOL_NAMES.has(req.tool_choice.name)) {
+        body.tool_choice = "auto";
+      } else {
+        body.tool_choice = req.tool_choice?.type === "any"
+          ? "required"
+          : req.tool_choice?.type === "tool"
+            ? { type: "function", function: { name: req.tool_choice.name } }
+            : "auto";
+      }
+    }
   }
 
   if (req.thinking?.type === "enabled") {
