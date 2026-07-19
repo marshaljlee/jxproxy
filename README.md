@@ -19,8 +19,8 @@ Another claude experiment. free-claude-code, free-code & Claude On Android
 # macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/marshaljlee/jxproxy/main/install.sh | bash
 
-# Android (Termux)
-curl -fsSL https://raw.githubusercontent.com/marshaljlee/jxproxy/main/installers/install-android.sh | bash
+# Android (Termux) — interactive, pre-installs all providers
+curl -fsSL https://raw.githubusercontent.com/marshaljlee/jxproxy/main/installers/install-jxproxy-termux.sh | bash
 
 # Alpine Linux
 curl -fsSL https://raw.githubusercontent.com/marshaljlee/jxproxy/main/installers/install-alpine.sh | sh
@@ -119,67 +119,90 @@ See [FEATURES.md](docs/FEATURES.md) for the full audit of all 88 flags.
 | Windows 11 on ARM | ✅ | `bun build --compile --target bun-windows-arm64` (Bun 1.2+ auto-detected) |
 | iOS (a-Shell/iSH) | 🚧 Experimental | Linux arm64 binary via iSH appstore version |
 
-## Android (ARM64) + jxcode App
+## Android (ARM64) — Termux Installer
 
-The jxcode Flutter app connects to jxproxy on Android to use Claude:
+The `install-jxproxy-termux.sh` installer does it all in one run:
 
 ```bash
-# 1. Install Termux from F-Droid
-# 2. Install dependencies
-pkg update && pkg upgrade
-pkg install bun proot -y
-
-# 3. Install jxproxy
-curl -fsSL https://raw.githubusercontent.com/marshaljlee/jxproxy/main/install.sh | bash
-
-# 4. Fix /tmp (Android blocks it — proot bind mount)
-proot -b /data/data/com.termux/files/usr/tmp:/tmp
-
-# 5. Start jxproxy on port 5255 (default for jxcode)
-jxproxy --port 5255
-
-# 6. Open jxcode Flutter app — it auto-connects to 127.0.0.1:5255
+# Install Termux from F-Droid, then:
+curl -fsSL https://raw.githubusercontent.com/marshaljlee/jxproxy/main/installers/install-jxproxy-termux.sh | bash
 ```
 
-The jxcode Flutter app detects it's on Android and uses **API mode**: it sends HTTP requests to `http://127.0.0.1:5255/v1/messages` instead of spawning a CLI subprocess. The jxproxy server handles provider routing, protocol conversion, and API key management.
+What the installer handles:
+
+| Step | What it does |
+|------|-------------|
+| Dependencies | Installs `glibc-runner` for glibc binary compatibility on Bionic |
+| Binaries | Downloads `jxproxy-cli` + `jxproxy-proxy` from GitHub Releases |
+| Launcher | Installs `android-launcher.sh` as `~/.local/bin/jxproxy` |
+| Config | Writes `~/.jxproxy/config.env` with all providers pre-configured |
+| PATH | Prepends `~/.local/bin` so `claude` → jxproxy takes priority |
+| Official launcher | Renames `/usr/bin/claude` → `claude-official` so it never interferes |
+| Symlink | Creates `~/.local/bin/claude` → `~/.local/bin/jxproxy` |
+| `.bashrc` / `.profile` | Writes clean files with jxproxy env vars, no duplicates |
+| API wizard | If running interactively, prompts to paste API keys for each provider |
+
+After install, just run `claude` — no alias needed, no official Anthropic code involved.
+
+### Provider chain (default config)
+
+```
+opencode/big-pickle  ──►  nvidia/nemotron-3-ultra  ──►  z.ai/glm-5.2
+  (primary)                   (fallback 1)                (fallback 2)
+```
+
+### Revisiting API key setup
+
+```bash
+jxproxy --setup-api    # opens config.env in nano
+# or directly:
+nano ~/.jxproxy/config.env
+```
+
+### jxcode Flutter app
+
+The jxcode app connects to jxproxy on port 5255 using API mode (HTTP requests to `/v1/messages`). Same proxy, same config.
 
 ## Configuration
 
-Set environment variables or create `~/.jxproxy/config.env`:
+Set environment variables or create `~/.jxproxy/config.env` (the installer does this for you):
 
 ```bash
 # --- Proxy Configuration ---
-# The port the proxy listens on (default: 5529)
-JXPROXY_PORT=5529
-
-# Auth token sent by Claude Code as x-api-key (default: jxproxy)
-# Set to empty to disable proxy auth
+JXPROXY_PORT=5255
 JXPROXY_AUTH_TOKEN=jxproxy
+JXPROXY_PROVIDER=opencode-zen
 
-# --- Model Routing ---
-# Default model for all requests (provider-prefixed ref)
-MODEL=anthropic/claude-sonnet-5-20251001
+# Default model
+MODEL=opencode/big-pickle
+ENABLE_MODEL_THINKING=true
 
-# Per-tier overrides (matched by name substring: opus, sonnet, haiku)
-MODEL_OPUS=anthropic/claude-opus-4-8-20250701
-MODEL_SONNET=anthropic/claude-sonnet-5-20251001
-MODEL_HAIKU=anthropic/claude-haiku-4-5-20251001
+# Tiered model routing
+MODEL_OPUS=opencode/big-pickle
+MODEL_SONNET=nvidia/nemotron-3-ultra-550b-a55b
+MODEL_HAIKU=z/glm-5.2
+
+# Fallback chain (tried in order if primary provider fails)
+FALLBACK_PROVIDERS=nvidia,z.ai
 
 # --- Provider Credentials ---
-ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...
-OPENROUTER_API_KEY=sk-or-...
-OPENCODE_API_KEY=oc-...
+# OPENCODE_API_KEY=sk-oc-...       # Primary: OpenCode
+# OPENAI_API_KEY=nvapi-...         # Fallback: NVIDIA NIM
+# ZAI_API_KEY=zai-...              # Fallback: z.ai
 
 # --- Provider Selection ---
-# Which provider to route through. Options:
+# Options for JXPROXY_PROVIDER:
 #   direct       — use ANTHROPIC_API_KEY directly (default)
 #   openrouter   — route via OpenRouter
 #   opencode-zen — route via OpenCode Zen (opencode.ai/zen/v1)
 #   opencode-go  — route via OpenCode Go (opencode.ai/zen/go/v1)
 #   openai       — translate to OpenAI-compatible API
+#   zai          — translate to z.ai API (api.z.ai/v1)
 #   local        — connect to a local LLM (Ollama, LM Studio, llama.cpp)
-JXPROXY_PROVIDER=direct
+
+# --- z.ai (OpenAI-compatible fallback) ---
+ZAI_BASE_URL=https://api.z.ai/v1
+# ZAI_API_KEY=
 
 # --- Local LLM (when JXPROXY_PROVIDER=local) ---
 LOCAL_LLM_BASE_URL=http://127.0.0.1:11434/v1
@@ -198,6 +221,7 @@ All providers using OpenAI Chat protocol (codex, gemini, gpt, deepseek, mistral,
 | OpenCode Go | OpenAI Chat | ✅ `opencode-go` | `opencode.ai/zen/go/v1`, shares `OPENCODE_API_KEY` |
 | OpenAI / Codex | OpenAI Chat | ✅ `openai` | Uses `OPENAI_API_KEY` |
 | Local (Ollama, LM Studio, llama.cpp) | OpenAI Chat | ✅ `local` | Configure `LOCAL_LLM_BASE_URL` + `LOCAL_LLM_MODEL` |
+| z.ai (GLM-5.2, GLM-5, Qwen3) | OpenAI Chat | ✅ `zai` | Native `zai` provider — `ZAI_BASE_URL` + `ZAI_API_KEY`. Maps from `z.ai` in `FALLBACK_PROVIDERS` |
 | Google Gemini / AWS Bedrock / Vertex / DeepSeek / Mistral / Groq / Grok / Fireworks / NVIDIA NIM | Varies | 🔧 Via `openai` or `direct` | Set `JXPROXY_PROVIDER=openai` + custom `OPENAI_BASE_URL` and `OPENAI_API_KEY` |
 
 ## Building From Source
@@ -256,11 +280,11 @@ The proxy server is a lightweight [Hono](https://hono.dev/) app running on Fasti
 5. Answers trivial probes (HEAD/OPTIONS, health checks) locally to save latency
 
 ### Android Compatibility
-On Android (Termux), the `install-android.sh` script:
-1. Installs `glibc-runner` and `patchelf-glibc` from the Termux glibc repository
-2. Downloads the official linux-arm64 Claude binary
-3. Patches the ELF interpreter via `patchelf --set-interpreter`
-4. Installs a wrapper with auto-update checking, pre-flight smoke testing, and crash rollback
+On Android (Termux), binaries compiled with `bun build --compile --target=bun-linux-arm64` produce ELF shared objects (PIE) linked against glibc. Since Android uses Bionic libc, the `install-jxproxy-termux.sh` script:
+1. Installs `glibc-runner` from the Termux glibc repository (provides `ld-linux-aarch64.so.1` loader + glibc shared libraries)
+2. Runs all jxproxy binaries through the glibc loader with `LD_PRELOAD` unset (Termux's `libtermux-exec-ld-preload.so` is compiled for Bionic, not glibc)
+3. Renames any existing `/usr/bin/claude` to `claude-official` to prevent conflicts with the official launcher
+4. Writes clean `.bashrc` and `.profile` — no stale aliases, no duplicate PATH entries
 
 ## License
 
