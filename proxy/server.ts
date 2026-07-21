@@ -174,8 +174,11 @@ function parseCommaList(raw: string): string[] {
 function resolveModel(config: ProxyConfig, incomingModel: string): string {
   const lower = incomingModel.toLowerCase();
 
-  // Direct provider model refs (e.g., "openrouter/anthropic/claude-sonnet-5")
+  // Strip provider prefix: "opencode/big-pickle" → "big-pickle"
+  // Only for single-segment provider prefixes; preserve multi-segment refs like "openrouter/anthropic/claude-sonnet-5"
   if (incomingModel.includes("/")) {
+    const parts = incomingModel.split("/");
+    if (parts.length === 2) return parts[1];
     return incomingModel;
   }
 
@@ -394,9 +397,16 @@ function toOpenAIChat(req: MessagesRequest, visionModels: string[] = []): Record
  */
 function* openAIToAnthropicSSE(
   chunk: Record<string, unknown>,
+  state: { started: boolean; finished: boolean },
 ): Generator<string> {
   const choices = (chunk.choices || []) as Array<{
-    delta?: { content?: string; role?: string; tool_calls?: Array<Record<string, unknown>> };
+    delta?: {
+      content?: string | null;
+      role?: string;
+      reasoning?: string;
+      reasoning_details?: Array<{ type: string; text?: string }>;
+      tool_calls?: Array<Record<string, unknown>>;
+    };
     finish_reason?: string | null;
     index: number;
   }>;
@@ -404,13 +414,29 @@ function* openAIToAnthropicSSE(
   for (const choice of choices) {
     const delta = choice.delta || {};
 
-    if (delta.content) {
-      yield `event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":${JSON.stringify(delta.content)}}}\n\n`;
+    if (!state.started && delta.role === "assistant") {
+      yield `event: message_start\ndata: {"type":"message_start","message":{"role":"assistant","content":[]}}\n\n`;
+      yield `event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n`;
+      state.started = true;
     }
 
-    if (delta.role === "assistant") {
-      yield `event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n`;
-      yield `event: message_start\ndata: {"type":"message_start","message":{"role":"assistant","content":[]}}\n\n`;
+    // Extract text: prefer content, fall back to reasoning/reasoning_details
+    let text: string | null = null;
+    if (delta.content && delta.content.length > 0) {
+      text = delta.content;
+    } else if (delta.reasoning && delta.reasoning.length > 0) {
+      text = delta.reasoning;
+    } else if (delta.reasoning_details?.length) {
+      for (const rd of delta.reasoning_details) {
+        if (rd.type === "reasoning.text" && rd.text) {
+          text = rd.text;
+          break;
+        }
+      }
+    }
+
+    if (text !== null) {
+      yield `event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":${JSON.stringify(text)}}}\n\n`;
     }
 
     if (delta.tool_calls) {
@@ -426,7 +452,8 @@ function* openAIToAnthropicSSE(
       }
     }
 
-    if (choice.finish_reason) {
+    if (choice.finish_reason && !state.finished) {
+      state.finished = true;
       const stopReason = choice.finish_reason === "tool_calls"
         ? "tool_use"
         : choice.finish_reason === "length"
@@ -532,6 +559,7 @@ async function routeToOpenAI(
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
     let buffer = "";
+    const sseState = { started: false, finished: false };
 
     const stream = new ReadableStream({
       async start(controller) {
@@ -547,15 +575,10 @@ async function routeToOpenAI(
             for (const line of lines) {
               if (line.startsWith("data: ")) {
                 const data = line.slice(6);
-                if (data === "[DONE]") {
-                  controller.enqueue(
-                    encoder.encode("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
-                  );
-                  continue;
-                }
+                if (data === "[DONE]") continue;
                 try {
                   const chunk = JSON.parse(data);
-                  for (const sse of openAIToAnthropicSSE(chunk)) {
+                  for (const sse of openAIToAnthropicSSE(chunk, sseState)) {
                     controller.enqueue(encoder.encode(sse));
                   }
                 } catch {
@@ -583,17 +606,36 @@ async function routeToOpenAI(
   // Non-streaming: convert complete response
   const data = await response.json() as Record<string, unknown>;
   const choices = (data.choices || []) as Array<{
-    message?: { content?: string; tool_calls?: Array<Record<string, unknown>> };
+    message?: {
+      content?: string | null;
+      reasoning?: string;
+      reasoning_details?: Array<{ type: string; text?: string }>;
+      tool_calls?: Array<Record<string, unknown>>;
+    };
     finish_reason?: string;
   }>;
   const choice = choices[0]?.message;
+
+  // Extract text: prefer content, fall back to reasoning/reasoning_details
+  let responseText = choice?.content || "";
+  if (!responseText && choice?.reasoning) {
+    responseText = choice.reasoning;
+  }
+  if (!responseText && choice?.reasoning_details?.length) {
+    for (const rd of choice.reasoning_details) {
+      if (rd.type === "reasoning.text" && rd.text) {
+        responseText = rd.text;
+        break;
+      }
+    }
+  }
 
   const anthropicResponse: Record<string, unknown> = {
     id: `msg_${Date.now()}`,
     type: "message",
     role: "assistant",
     content: [
-      { type: "text", text: choice?.content || "" },
+      { type: "text", text: responseText },
     ],
     model: req.model,
     stop_reason: choice?.finish_reason === "tool_calls" ? "tool_use" : "end_turn",
@@ -701,7 +743,7 @@ async function openAIToAnthropicStream(
 
   const stream = new ReadableStream({
     async start(controller) {
-      let hasStarted = false;
+      const orState = { started: false, finished: false };
       try {
         while (true) {
           const { done, value } = await reader.read();
@@ -722,10 +764,7 @@ async function openAIToAnthropicStream(
               }
               try {
                 const chunk = JSON.parse(data);
-                for (const sse of openAIToAnthropicSSE(chunk)) {
-                  if (!hasStarted && sse.includes("content_block_start")) {
-                    hasStarted = true;
-                  }
+                for (const sse of openAIToAnthropicSSE(chunk, orState)) {
                   controller.enqueue(encoder.encode(sse));
                 }
               } catch {
@@ -735,7 +774,7 @@ async function openAIToAnthropicStream(
           }
         }
 
-        if (!hasStarted) {
+        if (!orState.started) {
           // Not a streaming response — handle as non-streaming
           controller.enqueue(
             encoder.encode('event: message_stop\ndata: {"type":"message_stop"}\n\n'),
